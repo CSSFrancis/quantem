@@ -837,6 +837,25 @@ def _compose_ellipse(ellipse_new, ellipse_prev) -> np.ndarray:
     return np.array([0.5 * (sym[0, 0] - sym[1, 1]), sym[0, 1]])
 
 
+def _warn_large_calibration_adjustment(scale: float, ellipse) -> None:
+    """Warn when a calibration fit needs unusually large corrections."""
+    scale_change_pct = 100 * (float(scale) - 1.0)
+    ellipticity_pct = 0.0 if ellipse is None else 200 * float(np.hypot(*ellipse))
+    adjustments = []
+    if ellipticity_pct > 3.0:
+        adjustments.append(f"ellipticity is {ellipticity_pct:.2f}% (limit 3%)")
+    if abs(scale_change_pct) > 10.0:
+        adjustments.append(f"pixel size changed by {scale_change_pct:+.1f}% (limit +/-10%)")
+    if adjustments:
+        warnings.warn(
+            "Large calibration adjustment: "
+            + "; ".join(adjustments)
+            + ". Check the reference crystal, peak detection, and starting pixel size.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def apply_ellipse(peaks, ellipse):
     """Return a copy of (qx, qy, intensity) peaks with the ellipse applied.
 
@@ -1211,7 +1230,8 @@ def calibrate(
     -----
     UserWarning
         If fewer than three rings match or their residual rms exceeds
-        `residual_tol`.
+        `residual_tol`, or if the fitted ellipticity exceeds 3% or the fitted
+        pixel size differs from `pixel_size_guess` by more than 10%.
 
     Notes
     -----
@@ -1263,6 +1283,7 @@ def calibrate(
         )
 
     pixel_size = pixel_size_guess * scale
+    _warn_large_calibration_adjustment(scale, ellipse)
     peaks = peaks_to_calibrated(
         peaks_px, pixel_size, rotation_ccw_deg=rotation_ccw_deg, ellipse=ellipse
     )
@@ -1431,8 +1452,7 @@ def _calibration_panels(
     n_rings: int = 12,
     shell_step: float = 0.005,
 ) -> None:
-    """The radial histogram against one crystal's rings (top) and every peak
-    as azimuth against scattering vector with its strongest rings (bottom)."""
+    """The radial histogram and, when requested, the azimuth view for one crystal."""
     plot_ring_comparison(
         peaks,
         [crystal],
@@ -1445,6 +1465,8 @@ def _calibration_panels(
         figax=(ax_hist.figure, [ax_hist]),
     )
     ax_hist.set_xlabel("")
+    if ax_az is None:
+        return
     # azimuth against scattering vector: a pixel size error shifts every
     # ring, the elliptic distortion is a cos(2 phi) wobble of each one
     flat = peaks.select_fields("qx", "qy", "intensity").numpy().astype(np.float64)
@@ -1485,15 +1507,17 @@ def plot_calibration(
     axsize: tuple[float, float] = (6.0, 6.4),
     figax=None,
     shell_step: float = 0.005,
+    plot_azimuth: bool = True,
 ):
     """Calibrated peaks against the rings of every crystal, one column each.
 
     The calibration check for all candidate phases, however many of them the
     calibration itself was fit to. Each column holds the radial histogram of
-    every peak against that crystal's rings (top) and every peak as azimuth
-    against scattering vector with the same rings (bottom). A ring beside the
-    measured peaks in every direction is a lattice parameter or pixel size
-    error; a ring that wobbles with azimuth is elliptic distortion.
+    every peak against that crystal's rings and, when ``plot_azimuth=True``,
+    every peak as azimuth against scattering vector with the same rings. A
+    ring beside the measured peaks in every direction is a lattice parameter
+    or pixel size error; a ring that wobbles with azimuth is elliptic
+    distortion.
 
     Parameters
     ----------
@@ -1517,35 +1541,47 @@ def plot_calibration(
     zone_axis : sequence of int, optional
         Show only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`).
+    plot_azimuth : bool, default=True
+        Include the azimuth-versus-scattering-vector panels below the radial
+        histograms. False returns only the radial histogram row.
     axsize : tuple, default=(6.0, 6.4)
         Size of one column.
     figax : (fig, axs) | None
-        Existing figure and a (2, n_crystals) array of axes.
+        Existing figure and an array of axes with shape
+        ``(2 if plot_azimuth else 1, n_crystals)``.
 
     Returns
     -------
     tuple
-        ``(fig, axs)``, axs of shape (2, n_crystals).
+        ``(fig, axs)``, where ``axs`` has shape
+        ``(2 if plot_azimuth else 1, n_crystals)``.
     """
     import matplotlib.pyplot as plt
 
     xtls = _restrict(crystals, zone_axis)
+    n_rows = 2 if plot_azimuth else 1
     if figax is None:
         fig, axs = plt.subplots(
-            2,
+            n_rows,
             len(xtls),
-            figsize=(axsize[0] * len(xtls), axsize[1]),
+            figsize=(
+                axsize[0] * len(xtls),
+                axsize[1] * (1.0 if plot_azimuth else 0.5),
+            ),
             sharex=True,
             squeeze=False,
-            gridspec_kw={"height_ratios": [1, 1.3]},
+            gridspec_kw={"height_ratios": [1, 1.3] if plot_azimuth else [1]},
         )
     else:
         fig, axs = figax
-        axs = np.asarray(axs).reshape(2, len(xtls))
+        axs = np.asarray(axs)
+        if not plot_azimuth and axs.ndim == 2 and axs.shape[0] == 2:
+            axs = axs[:1]
+        axs = axs.reshape(n_rows, len(xtls))
     for col, xtl in enumerate(xtls):
         _calibration_panels(
             axs[0, col],
-            axs[1, col],
+            axs[1, col] if plot_azimuth else None,
             peaks,
             xtl,
             k_min=k_min,
@@ -1559,7 +1595,8 @@ def plot_calibration(
         axs[0, col].set_title(xtl.name, fontsize=10)
         if col:
             axs[0, col].set_ylabel("")
-            axs[1, col].set_ylabel("")
+            if plot_azimuth:
+                axs[1, col].set_ylabel("")
     if figax is None:
         fig.tight_layout()
         fig.subplots_adjust(hspace=0.08)
@@ -1752,6 +1789,12 @@ def refine_calibration(
     ------
     ValueError
         If `strain_maps` is empty or no position passes the filters.
+
+    Warns
+    -----
+    UserWarning
+        If the fitted ellipticity exceeds 3% or the pixel size correction
+        exceeds 10%.
     """
     As = []
     for i, sm in enumerate(strain_maps):
@@ -1778,12 +1821,14 @@ def refine_calibration(
     sym = 0.5 * (M + M.T) / scale
     e11 = float(0.5 * (sym[0, 0] - sym[1, 1]))
     e12 = float(sym[0, 1])
+    ellipse = (e11, e12)
+    _warn_large_calibration_adjustment(scale, ellipse)
     return {
         "M": M,
         "correction": np.linalg.inv(M),
         "scale": scale,
         "rotation_deg": float(np.rad2deg(theta)),
-        "ellipse": (e11, e12),
+        "ellipse": ellipse,
         "num_positions": int(A_all.shape[0]),
     }
 
