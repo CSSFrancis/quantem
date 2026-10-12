@@ -1133,6 +1133,7 @@ def calibrate(
     marker_size: float = 8.0,
     zone_axis=None,
     returnfig: bool = False,
+    shell_step: float = 0.005,
 ):
     """Measure the reciprocal pixel size and the elliptic distortion.
 
@@ -1191,6 +1192,10 @@ def calibrate(
         Fit only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`). For a specimen near one zone axis
         everywhere, whose peaks hold no other rings.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one ring in the
+        diagnostic plots. This affects display grouping only; calibration
+        fitting uses the individual reflections.
     returnfig : bool, default=False
         With `plot`, also return the figure and axes.
 
@@ -1325,6 +1330,7 @@ def calibrate(
             k_broadening=kb,
             bragg_k_power=bragg_k_power,
             marker_size=marker_size,
+            shell_step=shell_step,
         )
         axs[0, col].set_title(ttl, fontsize=10)
     axs[1, 1].set_ylabel("")
@@ -1352,12 +1358,21 @@ def calibrate(
     return (cal, fig, axs) if returnfig else cal
 
 
-# reflections closer than this in |g| (1/Angstroms) are drawn as one ring
-_SHELL_STEP = 0.005
-
-
-def _shells(crystal: Crystal, bragg_k_power: float):
+def _shells(
+    crystal: Crystal,
+    bragg_k_power: float,
+    shell_step: float = 0.005,
+):
     """Group a crystal's reflections into rings.
+
+    Parameters
+    ----------
+    crystal : Crystal
+        Crystal with structure factors calculated.
+    bragg_k_power : float
+        Weight each reflection by ``|g| ** bragg_k_power`` when summing a ring.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one ring.
 
     Returns
     -------
@@ -1368,20 +1383,36 @@ def _shells(crystal: Crystal, bragg_k_power: float):
     index : np.ndarray
         Ring index of every reflection.
     """
-    g = crystal.g_len.numpy()
-    ints = crystal.struct_factors_int.numpy() * g**bragg_k_power
-    _, index = np.unique(np.round(g / _SHELL_STEP).astype(np.int64), return_inverse=True)
-    index = index.ravel()
+    if not np.isfinite(shell_step) or shell_step <= 0:
+        raise ValueError(f"shell_step must be finite and positive, got {shell_step}")
+    g = crystal.g_len.numpy().ravel()
+    ints = crystal.struct_factors_int.numpy().ravel() * g**bragg_k_power
+    order = np.argsort(g)
+    sorted_g = g[order]
+    starts = [0]
+    for i in range(1, sorted_g.size):
+        if sorted_g[i] - sorted_g[starts[-1]] > shell_step:
+            starts.append(i)
+    starts = np.asarray(starts, dtype=int)
+    sorted_index = np.repeat(np.arange(starts.size), np.diff(np.r_[starts, g.size]))
+    index = np.empty(g.size, dtype=int)
+    index[order] = sorted_index
     count = np.bincount(index)
     radius = np.bincount(index, weights=g) / count
     intensity = np.bincount(index, weights=ints)
     return radius, intensity, index
 
 
-def _ring_shells(crystal: Crystal, k_min: float, k_max: float, bragg_k_power: float):
+def _ring_shells(
+    crystal: Crystal,
+    k_min: float,
+    k_max: float,
+    bragg_k_power: float,
+    shell_step: float = 0.005,
+):
     """Ring radii of a crystal in (k_min, k_max) and their summed intensity,
     relative to the strongest ring in that range."""
-    radius, intensity, _ = _shells(crystal, bragg_k_power)
+    radius, intensity, _ = _shells(crystal, bragg_k_power, shell_step=shell_step)
     keep = (radius > k_min) & (radius < k_max)
     uniq, tot = radius[keep], intensity[keep]
     return uniq, tot / max(float(tot.max()), 1e-30) if tot.size else tot
@@ -1398,6 +1429,7 @@ def _calibration_panels(
     bragg_k_power: float = 2.0,
     marker_size: float = 8.0,
     n_rings: int = 12,
+    shell_step: float = 0.005,
 ) -> None:
     """The radial histogram against one crystal's rings (top) and every peak
     as azimuth against scattering vector with its strongest rings (bottom)."""
@@ -1409,6 +1441,7 @@ def _calibration_panels(
         k_broadening=k_broadening,
         bragg_k_power=bragg_k_power,
         n_labels=n_rings,
+        shell_step=shell_step,
         figax=(ax_hist.figure, [ax_hist]),
     )
     ax_hist.set_xlabel("")
@@ -1429,7 +1462,7 @@ def _calibration_panels(
         lw=0,
         rasterized=True,
     )
-    radii, rel = _ring_shells(crystal, k_min, k_max, bragg_k_power)
+    radii, rel = _ring_shells(crystal, k_min, k_max, bragg_k_power, shell_step=shell_step)
     for g0 in radii[np.argsort(-rel)[:n_rings]]:
         ax_az.axvline(g0, color="k", lw=0.7, alpha=0.8)
     ax_az.set_xlim(k_min, k_max)
@@ -1451,6 +1484,7 @@ def plot_calibration(
     zone_axis=None,
     axsize: tuple[float, float] = (6.0, 6.4),
     figax=None,
+    shell_step: float = 0.005,
 ):
     """Calibrated peaks against the rings of every crystal, one column each.
 
@@ -1478,6 +1512,8 @@ def plot_calibration(
         Rings drawn in the azimuth panels and labeled in the histograms,
         strongest first; a large cell would otherwise fill both with its
         weak superstructure rings.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one displayed ring.
     zone_axis : sequence of int, optional
         Show only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`).
@@ -1518,6 +1554,7 @@ def plot_calibration(
             bragg_k_power=bragg_k_power,
             marker_size=marker_size,
             n_rings=n_rings,
+            shell_step=shell_step,
         )
         axs[0, col].set_title(xtl.name, fontsize=10)
         if col:
@@ -1541,6 +1578,7 @@ def plot_ring_comparison(
     n_labels: int = 12,
     zone_axis=None,
     figax=None,
+    shell_step: float = 0.005,
 ):
     """Measured radial peak histogram against crystal ring positions.
 
@@ -1573,6 +1611,8 @@ def plot_ring_comparison(
     n_labels : int, default=12
         Label at most this many rings, strongest first, which keeps a large
         cell with many rings readable.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one displayed ring.
     zone_axis : sequence of int, optional
         Show only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`).
@@ -1603,7 +1643,7 @@ def plot_ring_comparison(
         g_len = xtl.g_len.numpy()
         ints = xtl.struct_factors_int.numpy() * g_len**bragg_k_power
         hkl_np = xtl.hkl.numpy()
-        uniq, shell_int, shells = _shells(xtl, bragg_k_power)
+        uniq, shell_int, shells = _shells(xtl, bragg_k_power, shell_step=shell_step)
         shell_int = shell_int / shell_int.max()
 
         if k_broadening is not None:
@@ -1757,6 +1797,8 @@ def plot_bragg_rings(
     power: float = 0.25,
     zone_axis=None,
     figax=None,
+    shell_step: float = 0.005,
+    sort_by: str = "intensity",
 ):
     """2D histogram of all Bragg peaks with crystal rings overlaid.
 
@@ -1775,6 +1817,11 @@ def plot_bragg_rings(
         (solid, then dashed line styles).
     n_rings : int, default=8
         Number of rings per crystal, strongest first.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one displayed ring.
+    sort_by : {"intensity", "q_min"}, default="intensity"
+        Select which rings to draw: the strongest rings by summed intensity,
+        or the rings with the lowest nonzero |g|. Drawn rings are ordered by |g|.
     q_max : float | None
         Half-width of the histogram, 1/Angstroms. Defaults to just beyond
         the largest peak radius.
@@ -1795,6 +1842,9 @@ def plot_bragg_rings(
         ``(fig, ax)``.
     """
     import matplotlib.pyplot as plt
+
+    if sort_by not in ("intensity", "q_min"):
+        raise ValueError("sort_by must be 'intensity' or 'q_min'")
 
     xtls = _restrict(crystals, zone_axis)
     flat = peaks.select_fields("qx", "qy", "intensity").numpy().astype(np.float64)
@@ -1821,11 +1871,14 @@ def plot_bragg_rings(
     colors = ["r", "b", "g"]
     th = np.linspace(0, 2 * np.pi, 361)
     for ci, xtl in enumerate(xtls):
-        uniq, shell_int, _ = _shells(xtl, 2.0)
-        keep = uniq < q_max
+        uniq, shell_int, _ = _shells(xtl, 2.0, shell_step=shell_step)
+        keep = (uniq > 0) & (uniq < q_max)
         uniq, shell_int = uniq[keep], shell_int[keep]
-        order = np.argsort(shell_int)[::-1][:n_rings]
-        for k, u in enumerate(np.sort(uniq[order])):
+        if sort_by == "intensity":
+            selected = np.argsort(shell_int)[::-1][:n_rings]
+        else:
+            selected = np.argsort(uniq)[:n_rings]
+        for k, u in enumerate(np.sort(uniq[selected])):
             ax.plot(
                 u * np.sin(th),
                 u * np.cos(th),

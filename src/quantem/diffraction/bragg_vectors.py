@@ -1619,7 +1619,8 @@ class BraggVectors(AutoSerialize):
             Further arguments of
             :func:`~quantem.diffraction.calibration.calibrate`, e.g.
             `zone_axis` to fit only the rings of one zone, `fit_ellipse`,
-            `scale_search`, `k_min`, `k_max`, `marker_size` and `figsize`.
+            `scale_search`, `k_min`, `k_max`, `marker_size`, `figsize` and
+            `shell_step` for ring grouping in diagnostic plots.
 
         Returns
         -------

@@ -978,8 +978,9 @@ class CrystalMap(AutoSerialize):
         **kwargs
             Further arguments of
             :func:`~quantem.diffraction.calibration.plot_calibration`, e.g.
-            `zone_axis` to show only the rings of one zone, `k_broadening`
-            and `marker_size`.
+            `zone_axis` to show only the rings of one zone, `k_broadening`,
+            `marker_size` and `shell_step` to control how close reflections
+            are grouped into one displayed ring.
 
         Returns
         -------
@@ -996,15 +997,62 @@ class CrystalMap(AutoSerialize):
             **kwargs,
         )
 
-    def plot_bragg_rings(self, **kwargs):
-        """Bragg vector map of every peak with the rings of every crystal.
+    def plot_bragg_rings(
+        self,
+        *,
+        n_rings: int = 8,
+        q_max: float | None = None,
+        bins: int = 400,
+        power: float = 0.25,
+        zone_axis=None,
+        figax=None,
+        shell_step: float = 0.005,
+        sort_by: str = "intensity",
+    ):
+        """Show the scan's calibrated peak density with crystal rings overlaid.
+
+        Every detected peak in the scan contributes to one 2D histogram in
+        reciprocal-space coordinates. The concentric circles are theoretical
+        reflection shells from each crystal stored in this map. They should
+        pass through the measured peak density when the reciprocal-space
+        calibration and the crystal cell agree. This is a 2D overview; use
+        :meth:`plot_ring_comparison` for a 1D radial histogram.
+
+        The plot uses this map's shared calibrated peaks (`cm.peaks`) and its
+        candidate crystals. It does not use peaks from a separate local
+        variable. For example, to show the six lowest-q shells grouped at a
+        0.01 1/Angstrom tolerance::
+
+            fig, ax = cm.plot_bragg_rings(
+                n_rings=6, sort_by="q_min", shell_step=0.01
+            )
 
         Parameters
         ----------
-        **kwargs
-            Arguments of
-            :func:`~quantem.diffraction.calibration.plot_bragg_rings`, e.g.
-            `n_rings`, `q_max` and `zone_axis`.
+        n_rings : int, default=8
+            Maximum number of rings drawn for each crystal.
+        sort_by : {"intensity", "q_min"}, default="intensity"
+            Choose which rings are drawn. ``"intensity"`` selects the rings
+            with the largest summed structure-factor intensity weighted by
+            ``|g|**2``. ``"q_min"`` selects the lowest nonzero scattering
+            vectors. Selected rings are drawn in increasing q order.
+        shell_step : float, default=0.005
+            Maximum span in ``|g|``, in 1/Angstroms, grouped as one ring.
+        q_max : float, optional
+            Half-width of the square reciprocal-space view, in 1/Angstroms.
+            Rings at or beyond this radius are omitted. By default, the view
+            extends just beyond the largest measured peak radius.
+        bins : int, default=400
+            Number of histogram bins along each axis. Increase this for finer
+            spatial detail in the peak-density map.
+        power : float, default=0.25
+            Power applied to the histogram before display; lower values make
+            weaker peak density easier to see beside strong peaks.
+        zone_axis : sequence of int, optional
+            Restrict the theoretical rings to reflections in this zone axis,
+            given as ``[uvw]`` or ``[UVTW]``.
+        figax : (fig, ax), optional
+            Draw into an existing Matplotlib figure and axis.
 
         Returns
         -------
@@ -1014,7 +1062,16 @@ class CrystalMap(AutoSerialize):
         from quantem.diffraction import calibration
 
         return calibration.plot_bragg_rings(
-            self.peaks, [om.crystal for om in self.orientation_maps], **kwargs
+            self.peaks,
+            [om.crystal for om in self.orientation_maps],
+            n_rings=n_rings,
+            q_max=q_max,
+            bins=bins,
+            power=power,
+            zone_axis=zone_axis,
+            figax=figax,
+            shell_step=shell_step,
+            sort_by=sort_by,
         )
 
     def _k_max_or_crystals(self) -> float:
