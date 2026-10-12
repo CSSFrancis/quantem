@@ -1121,6 +1121,8 @@ class BraggVectors(AutoSerialize):
 
         metadata = getattr(self.dataset, "metadata", None) or {}
         parent_rot = metadata.get("q_to_r_rotation_ccw_deg", None)
+        if parent_rot is None:
+            parent_rot = metadata.get("r_to_q_rotation_cw_deg", None)
         parent_tr = metadata.get("q_transpose", None)
 
         used_parent = False
