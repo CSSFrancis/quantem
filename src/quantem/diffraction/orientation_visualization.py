@@ -346,7 +346,7 @@ def wedge_legend(
     denom = 1 + Xu**2 + Yu**2
     V = np.stack([2 * Xu / denom, 2 * Yu / denom, (1 - Xu**2 - Yu**2) / denom], axis=-1)
     A_inv = np.linalg.inv(c.T)
-    W = V @ A_inv.T
+    W = np.einsum("...j,ij->...i", V, A_inv)
     inside = (W > -1e-9).all(axis=-1)
     rgba = np.zeros(X.shape + (4,))
     rgba[..., :3] = _bary_to_rgb(W, saturation_power, chroma)

@@ -1692,15 +1692,27 @@ class ReverseMonteCarlo(AutoSerialize):
             self. The weighted loss after each sweep is appended to
             ``self.loss_history``.
         """
+        if (
+            not isinstance(batch, (int, np.integer))
+            or isinstance(batch, (bool, np.bool_))
+            or batch < 1
+        ):
+            raise ValueError("batch must be a positive integer.")
         if self.coefficients is None:
             self.fit_background()
         n_sites = len(self.site_x)
+        if n_sites < 1:
+            raise ValueError("RMC requires at least one site in the supercell.")
         loss = self._update_residual()
         if not self.loss_history:
             self.loss_history.append(loss)
+        # Swap batches draw two distinct sites per proposed move. Keep batches
+        # within that limit, and use a smaller final batch to include any
+        # leftover proposal slots when the site count is not divisible.
+        batch = min(batch, max(n_sites // 2, 1))
         cap = max(batch // 8, 1)
         t0 = None
-        n_batches = max(n_sites // batch, 1)
+        n_batches = (n_sites + batch - 1) // batch
         p_omega = omega_fraction if self.displacements else 0.0
         p_random = random_fraction if self.displacements else 0.0
         budget = (
@@ -1711,23 +1723,27 @@ class ReverseMonteCarlo(AutoSerialize):
         su = None
         for sweep in sweeps:
             accepted = {"swap": 0, "random": 0, "omega": 0}
-            for _ in range(n_batches):
+            for batch_index in range(n_batches):
+                current_batch = min(batch, n_sites - batch_index * batch)
                 if su is None:
                     su = self._scale * self._u
                 spec = self.species_index
                 roll = self.rng.random()
                 if roll < p_random:
                     kind = "random"
-                    sites, new = self._random_proposals(batch)
+                    sites, new = self._random_proposals(current_batch)
                 elif roll < p_random + p_omega:
                     kind = "omega"
-                    sites, new = self._omega_proposals(batch)
+                    sites, new = self._omega_proposals(current_batch)
                 else:
                     kind = "swap"
-                    j = self.rng.choice(n_sites, 2 * batch, replace=False)
-                    j1, j2 = j[:batch], j[batch:]
-                    ok = spec[j1] != spec[j2]
-                    sites = np.stack([j1[ok], j2[ok]], 1)
+                    if n_sites < 2:
+                        sites = np.empty((0, 2), dtype=int)
+                    else:
+                        j = self.rng.choice(n_sites, 2 * current_batch, replace=False)
+                        j1, j2 = j[:current_batch], j[current_batch:]
+                        ok = spec[j1] != spec[j2]
+                        sites = np.stack([j1[ok], j2[ok]], 1)
                     new = None
                 if len(sites) == 0:
                     continue

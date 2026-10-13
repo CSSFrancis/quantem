@@ -847,6 +847,25 @@ def _compose_ellipse(ellipse_new, ellipse_prev) -> np.ndarray:
     return np.array([0.5 * (sym[0, 0] - sym[1, 1]), sym[0, 1]])
 
 
+def _warn_large_calibration_adjustment(scale: float, ellipse) -> None:
+    """Warn when a calibration fit needs unusually large corrections."""
+    scale_change_pct = 100 * (float(scale) - 1.0)
+    ellipticity_pct = 0.0 if ellipse is None else 200 * float(np.hypot(*ellipse))
+    adjustments = []
+    if ellipticity_pct > 3.0:
+        adjustments.append(f"ellipticity is {ellipticity_pct:.2f}% (limit 3%)")
+    if abs(scale_change_pct) > 10.0:
+        adjustments.append(f"pixel size changed by {scale_change_pct:+.1f}% (limit +/-10%)")
+    if adjustments:
+        warnings.warn(
+            "Large calibration adjustment: "
+            + "; ".join(adjustments)
+            + ". Check the reference crystal, peak detection, and starting pixel size.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def apply_ellipse(peaks, ellipse):
     """Return a copy of (qx, qy, intensity) peaks with the ellipse applied.
 
@@ -1167,6 +1186,7 @@ def calibrate(
     marker_size: float = 8.0,
     zone_axis=None,
     returnfig: bool = False,
+    shell_step: float = 0.005,
 ):
     """Measure the reciprocal pixel size and the elliptic distortion.
 
@@ -1238,6 +1258,10 @@ def calibrate(
     zone_axis : sequence of int, optional
         Fit only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`).
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one ring in the
+        diagnostic plots. This affects display grouping only; calibration
+        fitting uses the individual reflections.
     returnfig : bool, default=False
         With `plot`, also return the figure and axes.
 
@@ -1256,9 +1280,17 @@ def calibrate(
     UserWarning
         If fewer than three rings match, their residual rms exceeds
         `residual_tol`, the best scale sits at the edge of `scale_search`, a
-        competing scale scores nearly as well, or the peaks cover too few
+        competing scale scores nearly as well, the peaks cover too few
         azimuths to fix the ellipse (one dominant orientation: use
-        :func:`calibrate_2d`).
+        :func:`calibrate_2d`), or the fitted ellipticity exceeds 3% or the
+        fitted pixel size differs from `pixel_size_guess` by more than 10%.
+
+    Notes
+    -----
+    The figure shows the first reference crystal before and after the fit.
+    To check every candidate phase against the result, including phases the
+    calibration was not fit to, plot :func:`plot_calibration` on the
+    calibrated peaks, or :meth:`CrystalMap.plot_calibration`.
     """
     crystals = [crystal] if isinstance(crystal, Crystal) else list(crystal)
     for xtl in crystals:
@@ -1321,6 +1353,7 @@ def calibrate(
             scale *= float(np.median([t[2] for t in table]))
 
     pixel_size = pixel_size_guess * scale
+    _warn_large_calibration_adjustment(scale, ellipse)
     k = radii(ellipse)[sel] * scale
     table = [t[:3] for t in _ring_table(k, w, rings, k_broadening)]
     per_ring = np.array([t[2] for t in table]) if table else np.array([np.nan])
@@ -1402,6 +1435,7 @@ def calibrate(
             k_broadening=kb,
             power_intensity=power_intensity,
             marker_size=marker_size,
+            shell_step=shell_step,
         )
         axs[0, col].set_title(ttl, fontsize=10)
     axs[1, 1].set_ylabel("")
@@ -1776,12 +1810,21 @@ def _spot_panel(ax, q, w, g, gi, k_max, title, bin_size=None):
     ax.set_title(title, fontsize=10)
 
 
-# reflections closer than this in |g| (1/Angstroms) are drawn as one ring
-_SHELL_STEP = 0.005
-
-
-def _shells(crystal: Crystal, bragg_k_power: float):
+def _shells(
+    crystal: Crystal,
+    bragg_k_power: float,
+    shell_step: float = 0.005,
+):
     """Group a crystal's reflections into rings.
+
+    Parameters
+    ----------
+    crystal : Crystal
+        Crystal with structure factors calculated.
+    bragg_k_power : float
+        Weight each reflection by ``|g| ** bragg_k_power`` when summing a ring.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one ring.
 
     Returns
     -------
@@ -1792,20 +1835,36 @@ def _shells(crystal: Crystal, bragg_k_power: float):
     index : np.ndarray
         Ring index of every reflection.
     """
-    g = crystal.g_len.numpy()
-    ints = crystal.struct_factors_int.numpy() * g**bragg_k_power
-    _, index = np.unique(np.round(g / _SHELL_STEP).astype(np.int64), return_inverse=True)
-    index = index.ravel()
+    if not np.isfinite(shell_step) or shell_step <= 0:
+        raise ValueError(f"shell_step must be finite and positive, got {shell_step}")
+    g = crystal.g_len.numpy().ravel()
+    ints = crystal.struct_factors_int.numpy().ravel() * g**bragg_k_power
+    order = np.argsort(g)
+    sorted_g = g[order]
+    starts = [0]
+    for i in range(1, sorted_g.size):
+        if sorted_g[i] - sorted_g[starts[-1]] > shell_step:
+            starts.append(i)
+    starts = np.asarray(starts, dtype=int)
+    sorted_index = np.repeat(np.arange(starts.size), np.diff(np.r_[starts, g.size]))
+    index = np.empty(g.size, dtype=int)
+    index[order] = sorted_index
     count = np.bincount(index)
     radius = np.bincount(index, weights=g) / count
     intensity = np.bincount(index, weights=ints)
     return radius, intensity, index
 
 
-def _ring_shells(crystal: Crystal, k_min: float, k_max: float, bragg_k_power: float):
+def _ring_shells(
+    crystal: Crystal,
+    k_min: float,
+    k_max: float,
+    bragg_k_power: float,
+    shell_step: float = 0.005,
+):
     """Ring radii of a crystal in (k_min, k_max) and their summed intensity,
     relative to the strongest ring in that range."""
-    radius, intensity, _ = _shells(crystal, bragg_k_power)
+    radius, intensity, _ = _shells(crystal, bragg_k_power, shell_step=shell_step)
     keep = (radius > k_min) & (radius < k_max)
     uniq, tot = radius[keep], intensity[keep]
     return uniq, tot / max(float(tot.max()), 1e-30) if tot.size else tot
@@ -1823,9 +1882,9 @@ def _calibration_panels(
     power_intensity: float = 0.5,
     marker_size: float = 8.0,
     n_rings: int = 12,
+    shell_step: float = 0.005,
 ) -> None:
-    """The radial histogram against one crystal's rings (top) and every peak
-    as azimuth against scattering vector with its strongest rings (bottom)."""
+    """The radial histogram and, when requested, the azimuth view for one crystal."""
     plot_ring_comparison(
         peaks,
         [crystal],
@@ -1835,9 +1894,12 @@ def _calibration_panels(
         bragg_k_power=bragg_k_power,
         power_intensity=power_intensity,
         n_labels=n_rings,
+        shell_step=shell_step,
         figax=(ax_hist.figure, [ax_hist]),
     )
     ax_hist.set_xlabel("")
+    if ax_az is None:
+        return
     # azimuth against scattering vector: a pixel size error shifts every
     # ring, the elliptic distortion is a cos(2 phi) wobble of each one
     flat = peaks.select_fields("qx", "qy", "intensity").numpy().astype(np.float64)
@@ -1855,7 +1917,7 @@ def _calibration_panels(
         lw=0,
         rasterized=True,
     )
-    radii, rel = _ring_shells(crystal, k_min, k_max, bragg_k_power)
+    radii, rel = _ring_shells(crystal, k_min, k_max, bragg_k_power, shell_step=shell_step)
     for g0 in radii[np.argsort(-rel)[:n_rings]]:
         ax_az.axvline(g0, color="k", lw=0.7, alpha=0.8)
     ax_az.set_xlim(k_min, k_max)
@@ -1878,15 +1940,18 @@ def plot_calibration(
     zone_axis=None,
     axsize: tuple[float, float] = (6.0, 6.4),
     figax=None,
+    shell_step: float = 0.005,
+    plot_azimuth: bool = True,
 ):
     """Calibrated peaks against the rings of every crystal, one column each.
 
     The calibration check for all candidate phases, however many of them the
     calibration itself was fit to. Each column holds the radial histogram of
-    every peak against that crystal's rings (top) and every peak as azimuth
-    against scattering vector with the same rings (bottom). A ring beside the
-    measured peaks in every direction is a lattice parameter or pixel size
-    error; a ring that wobbles with azimuth is elliptic distortion.
+    every peak against that crystal's rings and, when ``plot_azimuth=True``,
+    every peak as azimuth against scattering vector with the same rings. A
+    ring beside the measured peaks in every direction is a lattice parameter
+    or pixel size error; a ring that wobbles with azimuth is elliptic
+    distortion.
 
     Parameters
     ----------
@@ -1907,38 +1972,52 @@ def plot_calibration(
         Rings drawn in the azimuth panels and labeled in the histograms,
         strongest first; a large cell would otherwise fill both with its
         weak superstructure rings.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one displayed ring.
     zone_axis : sequence of int, optional
         Show only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`).
+    plot_azimuth : bool, default=True
+        Include the azimuth-versus-scattering-vector panels below the radial
+        histograms. False returns only the radial histogram row.
     axsize : tuple, default=(6.0, 6.4)
         Size of one column.
     figax : (fig, axs) | None
-        Existing figure and a (2, n_crystals) array of axes.
+        Existing figure and an array of axes with shape
+        ``(2 if plot_azimuth else 1, n_crystals)``.
 
     Returns
     -------
     tuple
-        ``(fig, axs)``, axs of shape (2, n_crystals).
+        ``(fig, axs)``, where ``axs`` has shape
+        ``(2 if plot_azimuth else 1, n_crystals)``.
     """
     import matplotlib.pyplot as plt
 
     xtls = _restrict(crystals, zone_axis)
+    n_rows = 2 if plot_azimuth else 1
     if figax is None:
         fig, axs = plt.subplots(
-            2,
+            n_rows,
             len(xtls),
-            figsize=(axsize[0] * len(xtls), axsize[1]),
+            figsize=(
+                axsize[0] * len(xtls),
+                axsize[1] * (1.0 if plot_azimuth else 0.5),
+            ),
             sharex=True,
             squeeze=False,
-            gridspec_kw={"height_ratios": [1, 1.3]},
+            gridspec_kw={"height_ratios": [1, 1.3] if plot_azimuth else [1]},
         )
     else:
         fig, axs = figax
-        axs = np.asarray(axs).reshape(2, len(xtls))
+        axs = np.asarray(axs)
+        if not plot_azimuth and axs.ndim == 2 and axs.shape[0] == 2:
+            axs = axs[:1]
+        axs = axs.reshape(n_rows, len(xtls))
     for col, xtl in enumerate(xtls):
         _calibration_panels(
             axs[0, col],
-            axs[1, col],
+            axs[1, col] if plot_azimuth else None,
             peaks,
             xtl,
             k_min=k_min,
@@ -1948,11 +2027,13 @@ def plot_calibration(
             power_intensity=power_intensity,
             marker_size=marker_size,
             n_rings=n_rings,
+            shell_step=shell_step,
         )
         axs[0, col].set_title(xtl.name, fontsize=10)
         if col:
             axs[0, col].set_ylabel("")
-            axs[1, col].set_ylabel("")
+            if plot_azimuth:
+                axs[1, col].set_ylabel("")
     if figax is None:
         fig.tight_layout()
         fig.subplots_adjust(hspace=0.08)
@@ -1972,6 +2053,7 @@ def plot_ring_comparison(
     n_labels: int = 12,
     zone_axis=None,
     figax=None,
+    shell_step: float = 0.005,
 ):
     """Measured radial peak histogram against crystal ring positions.
 
@@ -2006,6 +2088,8 @@ def plot_ring_comparison(
     n_labels : int, default=12
         Label at most this many rings, strongest first, which keeps a large
         cell with many rings readable.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one displayed ring.
     zone_axis : sequence of int, optional
         Show only the rings of this zone, [uvw] or [UVTW] (see
         :func:`zone_reflections`).
@@ -2042,7 +2126,7 @@ def plot_ring_comparison(
         g_len = xtl.g_len.numpy()
         ints = xtl.struct_factors_int.numpy() * g_len**bragg_k_power
         hkl_np = xtl.hkl.numpy()
-        uniq, shell_int, shells = _shells(xtl, bragg_k_power)
+        uniq, shell_int, shells = _shells(xtl, bragg_k_power, shell_step=shell_step)
         shell_int = shell_int / shell_int.max()
 
         if k_broadening is not None:
@@ -2151,6 +2235,12 @@ def refine_calibration(
     ------
     ValueError
         If `strain_maps` is empty or no position passes the filters.
+
+    Warns
+    -----
+    UserWarning
+        If the fitted ellipticity exceeds 3% or the pixel size correction
+        exceeds 10%.
     """
     As = []
     for i, sm in enumerate(strain_maps):
@@ -2177,12 +2267,14 @@ def refine_calibration(
     sym = 0.5 * (M + M.T) / scale
     e11 = float(0.5 * (sym[0, 0] - sym[1, 1]))
     e12 = float(sym[0, 1])
+    ellipse = (e11, e12)
+    _warn_large_calibration_adjustment(scale, ellipse)
     return {
         "M": M,
         "correction": np.linalg.inv(M),
         "scale": scale,
         "rotation_deg": float(np.rad2deg(theta)),
-        "ellipse": (e11, e12),
+        "ellipse": ellipse,
         "num_positions": int(A_all.shape[0]),
     }
 
@@ -2196,6 +2288,8 @@ def plot_bragg_rings(
     power: float = 0.25,
     zone_axis=None,
     figax=None,
+    shell_step: float = 0.005,
+    sort_by: str = "intensity",
 ):
     """2D histogram of all Bragg peaks with crystal rings overlaid.
 
@@ -2214,6 +2308,11 @@ def plot_bragg_rings(
         (solid, then dashed line styles).
     n_rings : int, default=8
         Number of rings per crystal, strongest first.
+    shell_step : float, default=0.005
+        Maximum range in |g|, in 1/Angstroms, grouped into one displayed ring.
+    sort_by : {"intensity", "q_min"}, default="intensity"
+        Select which rings to draw: the strongest rings by summed intensity,
+        or the rings with the lowest nonzero |g|. Drawn rings are ordered by |g|.
     q_max : float | None
         Half-width of the histogram, 1/Angstroms. Defaults to just beyond
         the largest peak radius.
@@ -2234,6 +2333,9 @@ def plot_bragg_rings(
         ``(fig, ax)``.
     """
     import matplotlib.pyplot as plt
+
+    if sort_by not in ("intensity", "q_min"):
+        raise ValueError("sort_by must be 'intensity' or 'q_min'")
 
     xtls = _restrict(crystals, zone_axis)
     flat = peaks.select_fields("qx", "qy", "intensity").numpy().astype(np.float64)
@@ -2260,11 +2362,14 @@ def plot_bragg_rings(
     colors = ["r", "b", "g"]
     th = np.linspace(0, 2 * np.pi, 361)
     for ci, xtl in enumerate(xtls):
-        uniq, shell_int, _ = _shells(xtl, 2.0)
-        keep = uniq < q_max
+        uniq, shell_int, _ = _shells(xtl, 2.0, shell_step=shell_step)
+        keep = (uniq > 0) & (uniq < q_max)
         uniq, shell_int = uniq[keep], shell_int[keep]
-        order = np.argsort(shell_int)[::-1][:n_rings]
-        for k, u in enumerate(np.sort(uniq[order])):
+        if sort_by == "intensity":
+            selected = np.argsort(shell_int)[::-1][:n_rings]
+        else:
+            selected = np.argsort(uniq)[:n_rings]
+        for k, u in enumerate(np.sort(uniq[selected])):
             ax.plot(
                 u * np.sin(th),
                 u * np.cos(th),

@@ -750,12 +750,18 @@ def _two_grain_peaks(xtl, q1, q2, n=3):
 
 def test_second_match_indexes_second_grain():
     """With deflation, the second match fits the peaks the first leaves."""
-    from quantem.diffraction.rotations import quat_from_zone_axis
+    from quantem.diffraction.rotations import qmult, quat_from_axis_angle, quat_from_zone_axis
 
     xtl = Crystal.from_ase(bulk("Ti", "bcc", a=3.31, cubic=True), verbose=False)
     xtl.calculate_structure_factors(k_max=1.5)
     q1 = quat_from_zone_axis(xtl.direction_vector((0, 0, 1)), 10.0)
-    q2 = quat_from_zone_axis(xtl.direction_vector((1, 1, 1)), 35.0)
+    q2_axis = xtl.direction_vector((1, 1, 1))
+    q2 = quat_from_zone_axis(q2_axis, 35.0)
+    # The bcc <111> zero-layer pattern is also matched by a 60-degree twin.
+    q2_twin = qmult(
+        q2,
+        quat_from_axis_angle(q2_axis, torch.tensor(np.pi / 3, dtype=torch.float64)),
+    )
     peaks = _two_grain_peaks(xtl, q1, q2)
     om = OrientationMap.from_vectors(peaks, xtl, energy_ev=200e3)
     om.build_plan(angle_step_zone_axis_deg=2.0, angle_step_in_plane_deg=2.0, verbose=False)
@@ -764,11 +770,11 @@ def test_second_match_indexes_second_grain():
     sym = xtl.sym_quats
     for i in range(peaks.shape[1]):
         e = [
-            [float(misorientation_angle_deg(q, om.quats[0, i, m], sym)) for q in (q1, q2)]
+            [float(misorientation_angle_deg(q, om.quats[0, i, m], sym)) for q in (q1, q2, q2_twin)]
             for m in range(2)
         ]
-        # the two matches are the two grains, one each
-        assert min(e[0][0] + e[1][1], e[0][1] + e[1][0]) < 6.0, e
+        # The two matches are the two grains, one each; either <111> twin fits q2.
+        assert min(e[0][0] + min(e[1][1:]), e[1][0] + min(e[0][1:])) < 6.0, e
 
 
 def test_match_residual():

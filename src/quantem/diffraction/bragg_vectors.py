@@ -1121,6 +1121,8 @@ class BraggVectors(AutoSerialize):
 
         metadata = getattr(self.dataset, "metadata", None) or {}
         parent_rot = metadata.get("q_to_r_rotation_ccw_deg", None)
+        if parent_rot is None:
+            parent_rot = metadata.get("r_to_q_rotation_cw_deg", None)
         parent_tr = metadata.get("q_transpose", None)
 
         used_parent = False
@@ -1630,7 +1632,8 @@ class BraggVectors(AutoSerialize):
             :func:`~quantem.diffraction.calibration.calibrate`, e.g.
             `zone_axis` to fit only the rings of one zone, `fit_ellipse`,
             `k_min`, `k_max`, `k_broadening`, `min_ring_intensity`,
-            `marker_size` and `figsize`.
+            `marker_size`, `figsize` and `shell_step` for ring grouping in
+            diagnostic plots.
 
         Returns
         -------

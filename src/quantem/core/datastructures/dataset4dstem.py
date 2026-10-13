@@ -92,6 +92,14 @@ class Dataset4dstem(Dataset4d):
         _token : object | None, optional
             Token to prevent direct instantiation, by default None
         """
+        # The old name described the inverse transform. Its clockwise angle
+        # has the same numeric value as the new q-to-r counterclockwise angle.
+        if (
+            metadata.get("q_to_r_rotation_ccw_deg") is None
+            and metadata.get("r_to_q_rotation_cw_deg") is not None
+        ):
+            metadata["q_to_r_rotation_ccw_deg"] = metadata["r_to_q_rotation_cw_deg"]
+
         mdata_keys_4dstem = ["q_to_r_rotation_ccw_deg", "q_transpose", "ellipticity"]
         for k in mdata_keys_4dstem:
             if k not in metadata.keys():
@@ -110,6 +118,16 @@ class Dataset4dstem(Dataset4d):
         )
         self._virtual_images = {}
         self._virtual_detectors = {}  # Store detector information for regeneration
+
+    def _post_load(self) -> None:
+        """Migrate detector rotation metadata from older serialized datasets."""
+        metadata = getattr(self, "_metadata", None)
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("q_to_r_rotation_ccw_deg") is None
+            and metadata.get("r_to_q_rotation_cw_deg") is not None
+        ):
+            metadata["q_to_r_rotation_ccw_deg"] = metadata["r_to_q_rotation_cw_deg"]
 
     @classmethod
     def from_file(cls, file_path: str | PathLike, file_type: str | None = None) -> "Dataset4dstem":

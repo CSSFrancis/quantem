@@ -779,7 +779,10 @@ class CrystalMap(AutoSerialize):
         phase=None,
         mask=None,
         signal_range="auto",
+        shade_by: str = "signal",
+        reliability_range: tuple[float, float] | str = "auto",
         shade_gamma: float = SHADE_GAMMA,
+        correlation_range: tuple[float, float] | str = "auto",
         **kwargs,
     ):
         """Inverse pole figure maps of every crystal, masked by the phase decision.
@@ -791,14 +794,35 @@ class CrystalMap(AutoSerialize):
         phase : int or str, optional
             Restrict to one crystal. None (default) plots all of them.
         mask : np.ndarray, optional
-            Overrides the automatic phase-and-signal mask entirely.
+            Overrides the automatic phase and brightness mask entirely.
         signal_range : tuple or "auto", default="auto"
-            Diffracted intensity mapped to black ... full color. Set it to
-            override the automatic range, e.g. (0, 500).
+            Diffracted intensity mapped to black ... full color when
+            ``shade_by="signal"``. Set it to override the automatic range,
+            e.g. (0, 500).
+        shade_by : {"signal", "reliability", "correlation"}, default="signal"
+            Brightness source for the orientation colors. Signal shows where
+            diffracted intensity is present; reliability shows how clearly
+            the phase fit preferred its winning crystal; correlation shows
+            the best orientation-match score for the winning crystal.
+        reliability_range : tuple or "auto", default="auto"
+            Reliability range mapped to black ... full color when
+            ``shade_by="reliability"``. Values below the lower bound are
+            black, values above the upper bound are full color. "auto" (the
+            default) uses zero and the 98th percentile of finite indexed
+            reliabilities. Unindexed positions and NaN reliabilities stay
+            black; a single-phase fit has no competing phase, so its
+            reliability is NaN.
+        correlation_range : tuple or "auto", default="auto"
+            Correlation range mapped to black ... full color when
+            ``shade_by="correlation"``. Values below the lower bound are
+            black, values above the upper bound are full color. "auto" uses
+            zero and the 98th percentile of finite correlations at positions
+            assigned to a crystal. Correlation is a cosine similarity, so a
+            high value alone does not establish that a crystal is present.
         shade_gamma : float, default=:data:`~quantem.diffraction.phase.SHADE_GAMMA`
-            Brightness exponent of that mask, the same one :meth:`plot_phase`
-            shades with. Below 1 lifts the faint positions, 1.0 is the linear
-            scale. Both are ignored when `mask` is given.
+            Brightness exponent, the same one :meth:`plot_phase` uses. Below
+            1 lifts faint positions, 1.0 is the linear scale. Ignored when
+            `mask` is given.
         **kwargs
             Passed to :meth:`OrientationMap.plot_orientation`, e.g. `smooth`,
             and `saturation_power` and `chroma` for the color wedge.
@@ -811,9 +835,50 @@ class CrystalMap(AutoSerialize):
             direction, the same rule as :meth:`plot_pole_figure`.
         """
         dirs = [direction] if isinstance(direction, str) else list(direction)
+        if mask is None and shade_by not in ("signal", "reliability", "correlation"):
+            raise ValueError(
+                f"shade_by must be 'signal', 'reliability' or 'correlation', got {shade_by!r}"
+            )
+        if mask is None and shade_by in ("reliability", "correlation"):
+            pm = self._require_fit(f"plot_orientation(shade_by={shade_by!r})")
+            phase_index = self.phase_index
+            if shade_by == "reliability":
+                values = pm.reliability.numpy()
+                value_range = reliability_range
+                range_name = "reliability_range"
+            else:
+                # Each crystal has its own correlation map. Use the score
+                # from the crystal selected at each probe position, then
+                # share one display range across the winning assignments.
+                values = np.full(phase_index.shape, np.nan, dtype=float)
+                for j, om in enumerate(self.orientation_maps):
+                    selected = phase_index == j
+                    values[selected] = om.corr[..., 0].numpy()[selected]
+                value_range = correlation_range
+                range_name = "correlation_range"
+            valid = (phase_index >= 0) & np.isfinite(values)
+            if value_range is None or value_range == "auto":
+                vals = values[valid]
+                hi = float(np.percentile(vals, 98)) if vals.size else 1.0
+                lo, hi = 0.0, max(hi, 1e-12)
+            else:
+                if not isinstance(value_range, (tuple, list)) or len(value_range) != 2:
+                    raise ValueError(f"{range_name} must be a pair (low, high) or 'auto'")
+                lo, hi = map(float, value_range)
+                if not np.isfinite([lo, hi]).all() or hi <= lo:
+                    raise ValueError(f"{range_name} must contain finite values with high > low")
+            shade_conf = np.nan_to_num((values - lo) / (hi - lo), nan=0.0).clip(0, 1)
+            if shade_gamma <= 0:
+                raise ValueError(f"shade_gamma must be positive, got {shade_gamma}")
+            shade_conf = np.power(shade_conf, shade_gamma) * valid
         out = []
         for i in self._phase_indices(phase):
-            m = mask if mask is not None else self.mask(i, signal_range, shade_gamma)
+            if mask is not None:
+                m = mask
+            elif shade_by in ("reliability", "correlation"):
+                m = (phase_index == i) * shade_conf
+            else:
+                m = self.mask(i, signal_range, shade_gamma)
             for d in dirs:
                 out.append(
                     self.orientation_maps[i].plot_orientation(direction=d, mask=m, **kwargs)
@@ -959,15 +1024,19 @@ class CrystalMap(AutoSerialize):
             **kwargs,
         )
 
-    def plot_calibration(self, k_min: float = 0.05, k_max: float | None = None, **kwargs):
+    def plot_calibration(
+        self,
+        k_min: float = 0.05,
+        k_max: float | None = None,
+        plot_azimuth: bool = True,
+        **kwargs,
+    ):
         """Calibrated peaks against the rings of every crystal in the map.
 
         One column per crystal: the radial histogram of every peak against
-        that crystal's rings, and every peak as azimuth against scattering
-        vector with the same rings. Run it after calibrating, whichever
-        phase the calibration was fit to: every candidate should line up,
-        and one that does not has the wrong lattice parameter for this
-        specimen, which matching cannot recover from.
+        that crystal's rings, and optionally every peak as azimuth against
+        scattering vector with the same rings. Run it after calibration to
+        check whether every candidate's rings line up with the peaks.
 
         Parameters
         ----------
@@ -975,16 +1044,21 @@ class CrystalMap(AutoSerialize):
             Smallest scattering vector shown, 1/Angstroms.
         k_max : float, optional
             Largest scattering vector shown; defaults to the map's own k_max.
+        plot_azimuth : bool, default=True
+            Include the azimuth-versus-scattering-vector panels below the
+            radial histograms. False returns only the radial histogram row.
         **kwargs
             Further arguments of
             :func:`~quantem.diffraction.calibration.plot_calibration`, e.g.
-            `zone_axis` to show only the rings of one zone, `k_broadening`
-            and `marker_size`.
+            `zone_axis` to show only the rings of one zone, `k_broadening`,
+            `marker_size` and `shell_step` to control how close reflections
+            are grouped into one displayed ring.
 
         Returns
         -------
         tuple
-            ``(fig, axs)``, axs of shape (2, number of crystals).
+            ``(fig, axs)``, where ``axs`` has shape
+            ``(2 if plot_azimuth else 1, number of crystals)``.
         """
         from quantem.diffraction import calibration
 
@@ -993,18 +1067,66 @@ class CrystalMap(AutoSerialize):
             [om.crystal for om in self.orientation_maps],
             k_min=k_min,
             k_max=k_max if k_max is not None else self._k_max_or_crystals(),
+            plot_azimuth=plot_azimuth,
             **kwargs,
         )
 
-    def plot_bragg_rings(self, **kwargs):
-        """Bragg vector map of every peak with the rings of every crystal.
+    def plot_bragg_rings(
+        self,
+        *,
+        n_rings: int = 8,
+        q_max: float | None = None,
+        bins: int = 400,
+        power: float = 0.25,
+        zone_axis=None,
+        figax=None,
+        shell_step: float = 0.005,
+        sort_by: str = "intensity",
+    ):
+        """Show the scan's calibrated peak density with crystal rings overlaid.
+
+        Every detected peak in the scan contributes to one 2D histogram in
+        reciprocal-space coordinates. The concentric circles are theoretical
+        reflection shells from each crystal stored in this map. They should
+        pass through the measured peak density when the reciprocal-space
+        calibration and the crystal cell agree. This is a 2D overview; use
+        :meth:`plot_ring_comparison` for a 1D radial histogram.
+
+        The plot uses this map's shared calibrated peaks (`cm.peaks`) and its
+        candidate crystals. It does not use peaks from a separate local
+        variable. For example, to show the six lowest-q shells grouped at a
+        0.01 1/Angstrom tolerance::
+
+            fig, ax = cm.plot_bragg_rings(
+                n_rings=6, sort_by="q_min", shell_step=0.01
+            )
 
         Parameters
         ----------
-        **kwargs
-            Arguments of
-            :func:`~quantem.diffraction.calibration.plot_bragg_rings`, e.g.
-            `n_rings`, `q_max` and `zone_axis`.
+        n_rings : int, default=8
+            Maximum number of rings drawn for each crystal.
+        sort_by : {"intensity", "q_min"}, default="intensity"
+            Choose which rings are drawn. ``"intensity"`` selects the rings
+            with the largest summed structure-factor intensity weighted by
+            ``|g|**2``. ``"q_min"`` selects the lowest nonzero scattering
+            vectors. Selected rings are drawn in increasing q order.
+        shell_step : float, default=0.005
+            Maximum span in ``|g|``, in 1/Angstroms, grouped as one ring.
+        q_max : float, optional
+            Half-width of the square reciprocal-space view, in 1/Angstroms.
+            Rings at or beyond this radius are omitted. By default, the view
+            extends just beyond the largest measured peak radius.
+        bins : int, default=400
+            Number of histogram bins along each axis. Increase this for finer
+            spatial detail in the peak-density map.
+        power : float, default=0.25
+            Power applied to the histogram before display; lower values make
+            weaker peak density easier to see beside strong peaks.
+        zone_axis : sequence of int, optional
+            Restrict the theoretical rings to reflections in this zone axis,
+            given as ``[uvw]`` or ``[UVTW]``.
+        figax : (fig, ax), optional
+            Draw into an existing Matplotlib figure and axis.
 
         Returns
         -------
@@ -1014,7 +1136,16 @@ class CrystalMap(AutoSerialize):
         from quantem.diffraction import calibration
 
         return calibration.plot_bragg_rings(
-            self.peaks, [om.crystal for om in self.orientation_maps], **kwargs
+            self.peaks,
+            [om.crystal for om in self.orientation_maps],
+            n_rings=n_rings,
+            q_max=q_max,
+            bins=bins,
+            power=power,
+            zone_axis=zone_axis,
+            figax=figax,
+            shell_step=shell_step,
+            sort_by=sort_by,
         )
 
     def _k_max_or_crystals(self) -> float:
