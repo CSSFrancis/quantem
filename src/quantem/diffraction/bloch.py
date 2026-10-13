@@ -3629,18 +3629,22 @@ def plot_strain_crystal_frame(
 
 
 def _q_to_pixels(
-    q_xy: torch.Tensor, origin_rc, pixel_size: float, rotation_ccw_deg: float, ellipse
+    q_xy: torch.Tensor,
+    origin_rc,
+    pixel_size: float,
+    rotation_ccw_deg: float,
+    ellipse,
+    transpose: bool = False,
 ):
     """Calibrated (qx, qy) [row, col frame] -> detector pixel (row, col):
-    undo the scan rotation and the ellipse correction of
+    undo the scan rotation (and transpose) and the ellipse correction of
     calibration.peaks_to_calibrated, then scale and shift to the origin."""
+    from quantem.diffraction.calibration import q_to_r_matrix
+
     q = q_xy.to(torch.float64)
-    if rotation_ccw_deg:
-        th = np.deg2rad(-rotation_ccw_deg)
-        rot = torch.tensor(
-            [[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]], dtype=torch.float64
-        )
-        q = q @ rot.T
+    if rotation_ccw_deg or transpose:
+        r_to_q = np.linalg.inv(q_to_r_matrix(rotation_ccw_deg, transpose))
+        q = q @ torch.as_tensor(r_to_q.T, dtype=torch.float64)
     if ellipse is not None:
         e11, e12 = float(ellipse[0]), float(ellipse[1])
         A = torch.tensor([[1 + e11, e12], [e12, 1 - e11]], dtype=torch.float64)
@@ -3709,6 +3713,7 @@ def render_pattern_image(
     fast_absorption: bool = True,
     tilt_weights: torch.Tensor | None = None,
     beams: torch.Tensor | None = None,
+    transpose: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Dynamical diffraction pattern images on the detector grid.
 
@@ -3736,6 +3741,9 @@ def render_pattern_image(
         Scan-to-detector rotation of the calibration, undone here.
     ellipse : sequence | None
         Elliptic distortion (e11, e12) of the calibration, undone here.
+    transpose : bool, default=False
+        Detector axes swapped before the rotation, undone here (see
+        :func:`quantem.diffraction.calibration.q_to_r_matrix`).
     deform : torch.Tensor | None
         (3, 3) deformation of the lab-frame reciprocal vectors.
     disk_radius_px, edge_px : float, default=3.0, 1.0
@@ -3795,7 +3803,7 @@ def render_pattern_image(
         beams=beams,
     )
     inten = (inten.reshape(Mt, Mr, t_grid.shape[0], -1) * w_ring[None, :, None, None]).sum(dim=1)
-    centers = _q_to_pixels(g_xy, origin_rc, pixel_size, rotation_ccw_deg, ellipse)
+    centers = _q_to_pixels(g_xy, origin_rc, pixel_size, rotation_ccw_deg, ellipse, transpose)
     images = render_disks(centers, inten, shape, disk_radius_px, edge_px)
     return images, centers, inten
 
@@ -3884,6 +3892,7 @@ def fit_disk_shape(
     k_max: float | None = None,
     fast_absorption: bool | None = None,
     progress_bar: bool = True,
+    transpose: bool = False,
 ) -> dict:
     """Global disk radius and edge width from the best-fit patterns.
 
@@ -3915,6 +3924,9 @@ def fit_disk_shape(
         Scan-to-detector rotation of the calibration.
     ellipse : sequence | None
         Elliptic distortion (e11, e12) of the calibration.
+    transpose : bool, default=False
+        Detector axes swapped before the rotation, undone here (see
+        :func:`quantem.diffraction.calibration.q_to_r_matrix`).
     positions : list of (int, int) | None
         Positions to fit; None takes the n_positions with the lowest
         dynamical cost.
@@ -4020,6 +4032,7 @@ def fit_disk_shape(
             k_max,
             fast_absorption,
             tilt_weights=tilt_w,
+            transpose=transpose,
         )
         for i, r in enumerate(radii_px):
             for j, e in enumerate(edges_px):
@@ -4060,6 +4073,7 @@ def refine_dynamical_image(
     fast_absorption: bool | None = None,
     update_orientations: bool = True,
     progress_bar: bool = True,
+    transpose: bool = False,
 ) -> dict:
     """Final dynamical refinement against the diffraction images.
 
@@ -4104,6 +4118,9 @@ def refine_dynamical_image(
         Scan-to-detector rotation of the calibration.
     ellipse : sequence | None
         Elliptic distortion (e11, e12) of the calibration.
+    transpose : bool, default=False
+        Detector axes swapped before the rotation, undone here (see
+        :func:`quantem.diffraction.calibration.q_to_r_matrix`).
     thickness_half_range_A : float, default=100.0
         Half-width (Angstroms) of the thickness search around the
         Bragg-vector thickness.
@@ -4225,6 +4242,7 @@ def refine_dynamical_image(
             k_max,
             fast_absorption,
             tilt_weights=tilt_w,
+            transpose=transpose,
         )
         cost = _image_cost(meas, images, pmask, power_intensity, background, radius)  # (M, T)
         T = len(t_grid)

@@ -1543,7 +1543,8 @@ class BraggVectors(AutoSerialize):
     def measure_scan_rotation(
         self,
         origins=None,
-        mask_radius: float | None = None,
+        mask_radius: float | str | None = "auto",
+        transpose: bool | None = None,
         plot: bool = False,
     ) -> float:
         """Rotation between the detector and the scan, from the direct beam.
@@ -1555,37 +1556,90 @@ class BraggVectors(AutoSerialize):
         and the out-of-plane maps do not depend on it.
 
         The curl is unchanged by a 180 degree rotation, so the answer is this
-        angle or this angle plus 180.
+        angle or this angle plus 180. A detector with its rows and columns
+        swapped is tested as well, as in ptychography.
+
+        The result is written to the dataset metadata as
+        ``q_to_r_rotation_ccw_deg`` and ``q_transpose``, the convention shared
+        with strain mapping and ptychography (see
+        :func:`~quantem.diffraction.calibration.q_to_r_matrix`), and read from
+        there by :meth:`calibrate`, :meth:`calibrate_2d` and
+        :meth:`calculate_strain_map`.
 
         Parameters
         ----------
         origins : np.ndarray, optional
             ``(scan_row, scan_col, 2)`` origins from :meth:`measure_origins`;
             defaults to the detector centre.
-        mask_radius : float, optional
+        mask_radius : float or "auto" or None, default="auto"
             Radius in detector pixels around the origin used for the center
-            of mass, which keeps the Bragg disks out of it. Set it a little
-            beyond the direct beam.
+            of mass, which keeps the Bragg disks out of it (needed for
+            nanobeam data). "auto" is 1.5 times the direct-beam radius
+            measured on the mean pattern, about the beam found there when no
+            `origins` are given; None uses the whole pattern.
+        transpose : bool, optional
+            Whether the detector axes are swapped; None (default) tests both.
         plot : bool, default=False
             Show the curl and divergence against the trial angle.
 
         Returns
         -------
         float
-            Counter-clockwise rotation in degrees, in [-90, 90).
+            Counter-clockwise rotation in degrees, in [-90, 90). The transpose
+            is in ``dataset.metadata["q_transpose"]``.
         """
         from quantem.diffraction import calibration
 
-        out = calibration.measure_scan_rotation(
-            self.dataset, origins=origins, mask_radius=mask_radius, plot=plot
+        if isinstance(mask_radius, str):
+            if mask_radius != "auto":
+                raise ValueError(f"mask_radius must be a number, 'auto' or None: {mask_radius}")
+            from quantem.diffraction.disk_detection import estimate_central_beam
+
+            dp = np.asarray(self.dataset.array, dtype=float).mean(axis=(0, 1))
+            (cy, cx), r_beam = estimate_central_beam(dp)
+            mask_radius = 1.5 * float(r_beam)
+            if origins is None:
+                origins = np.broadcast_to(
+                    np.array([cy, cx], dtype=float), (*self.dataset.array.shape[:2], 2)
+                )
+        angle, transpose = calibration.measure_scan_rotation(
+            self.dataset,
+            origins=origins,
+            mask_radius=mask_radius,
+            transpose=transpose,
+            plot=plot,
+            return_transpose=True,
         )
-        return out[0] if isinstance(out, tuple) else out
+        self._record_scan_rotation(angle, transpose)
+        if transpose:
+            print("the detector rows and columns are transposed (q_transpose=True)")
+        return angle
+
+    def _scan_rotation(self, rotation_ccw_deg, transpose) -> tuple[float, bool, bool]:
+        """The rotation and transpose to use: the values given, else the ones in
+        the dataset metadata, else none. Also says whether either was known."""
+        from quantem.diffraction.calibration import scan_rotation_from_metadata
+
+        md_rot, md_tr = scan_rotation_from_metadata(getattr(self.dataset, "metadata", None))
+        known = rotation_ccw_deg is not None or md_rot is not None
+        rot = rotation_ccw_deg if rotation_ccw_deg is not None else md_rot
+        tr = transpose if transpose is not None else md_tr
+        return float(rot or 0.0), bool(tr or False), known
+
+    def _record_scan_rotation(self, rotation_ccw_deg: float, transpose: bool) -> None:
+        """Write the rotation onto the dataset, where strain mapping and
+        ptychography read it."""
+        md = getattr(self.dataset, "metadata", None)
+        if isinstance(md, dict):
+            md["q_to_r_rotation_ccw_deg"] = float(rotation_ccw_deg)
+            md["q_transpose"] = bool(transpose)
 
     def calibrate(
         self,
         crystal,
         pixel_size_guess: float,
-        rotation_ccw_deg: float = 0.0,
+        rotation_ccw_deg: float | None = None,
+        transpose: bool | None = None,
         power_intensity: float = 0.5,
         scale_search: tuple[float, float] = (0.9, 1.1),
         plot: bool = False,
@@ -1613,9 +1667,16 @@ class BraggVectors(AutoSerialize):
         pixel_size_guess : float
             Starting reciprocal pixel size, 1/Angstroms per detector pixel.
             The scan covers `scale_search` around it.
-        rotation_ccw_deg : float, default=0.0
+        rotation_ccw_deg : float, optional
             Counter-clockwise diffraction-to-scan rotation in degrees, recorded
-            on the calibration for later use.
+            on the calibration. None (default) takes the dataset's
+            ``q_to_r_rotation_ccw_deg`` (from :meth:`measure_scan_rotation`,
+            ptychography or set by hand), else 0. A value given here is
+            written to the dataset metadata, so strain mapping and
+            ptychography use the same frame.
+        transpose : bool, optional
+            Detector axes swapped before the rotation; None (default) takes
+            the dataset's ``q_transpose``, else False.
         power_intensity : float, default=0.5
             Peaks are weighted by ``intensity ** power_intensity``; 0 counts
             every peak alike.
@@ -1651,16 +1712,20 @@ class BraggVectors(AutoSerialize):
 
         if self.peaks is None:
             raise ValueError("Run detect_disks() before calibrate().")
+        rotation_ccw_deg, transpose, known = self._scan_rotation(rotation_ccw_deg, transpose)
         cal = _cal.calibrate(
             self.peaks,
             crystal,
             pixel_size_guess,
             rotation_ccw_deg=rotation_ccw_deg,
+            transpose=transpose,
             power_intensity=power_intensity,
             scale_search=scale_search,
             plot=plot,
             **kwargs,
         )
+        if known:
+            self._record_scan_rotation(rotation_ccw_deg, transpose)
         self.calibration = cal
         return cal
 
@@ -1669,7 +1734,8 @@ class BraggVectors(AutoSerialize):
         crystal,
         pixel_size_guess: float,
         energy_ev: float,
-        rotation_ccw_deg: float = 0.0,
+        rotation_ccw_deg: float | None = None,
+        transpose: bool | None = None,
         precession_deg: float = 0.0,
         power_intensity: float = 0.5,
         plot: bool = False,
@@ -1696,9 +1762,16 @@ class BraggVectors(AutoSerialize):
             within a few percent.
         energy_ev : float
             Beam energy in eV.
-        rotation_ccw_deg : float, default=0.0
+        rotation_ccw_deg : float, optional
             Counter-clockwise diffraction-to-scan rotation in degrees, recorded
-            on the calibration for later use.
+            on the calibration. None (default) takes the dataset's
+            ``q_to_r_rotation_ccw_deg`` (from :meth:`measure_scan_rotation`,
+            ptychography or set by hand), else 0. A value given here is
+            written to the dataset metadata, so strain mapping and
+            ptychography use the same frame.
+        transpose : bool, optional
+            Detector axes swapped before the rotation; None (default) takes
+            the dataset's ``q_transpose``, else False.
         precession_deg : float, default=0.0
             Precession semi-angle of the simulated pattern.
         power_intensity : float, default=0.5
@@ -1721,17 +1794,21 @@ class BraggVectors(AutoSerialize):
 
         if self.peaks is None:
             raise ValueError("Run detect_disks() before calibrate_2d().")
+        rotation_ccw_deg, transpose, known = self._scan_rotation(rotation_ccw_deg, transpose)
         cal = _cal.calibrate_2d(
             self.peaks,
             crystal,
             pixel_size_guess,
             energy_ev=energy_ev,
             rotation_ccw_deg=rotation_ccw_deg,
+            transpose=transpose,
             precession_deg=precession_deg,
             power_intensity=power_intensity,
             plot=plot,
             **kwargs,
         )
+        if known:
+            self._record_scan_rotation(rotation_ccw_deg, transpose)
         self.calibration = cal
         return cal
 

@@ -18,6 +18,47 @@ from quantem.core.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
+def q_to_r_matrix(rotation_ccw_deg: float = 0.0, transpose: bool = False) -> np.ndarray:
+    """The 2x2 map from detector (q) to scan (r) coordinates, ``v_r = M @ v_q``.
+
+    The one convention shared by calibration, orientation and strain mapping
+    and ptychography, stored on a dataset as
+    ``metadata["q_to_r_rotation_ccw_deg"]`` and ``metadata["q_transpose"]``:
+    a detector vector (row, col) is first swapped to (col, row) if
+    `transpose`, then rotated counter-clockwise by `rotation_ccw_deg`,
+    ``row' = cos(t) row - sin(t) col``, ``col' = sin(t) row + cos(t) col``.
+    Ptychography stores the same rotation as ``com_rotation_rad`` and
+    ``com_transpose``.
+
+    Parameters
+    ----------
+    rotation_ccw_deg : float, default=0.0
+        Counter-clockwise rotation, degrees.
+    transpose : bool, default=False
+        Swap the detector row and column axes before the rotation.
+
+    Returns
+    -------
+    np.ndarray
+        (2, 2) matrix; its inverse maps scan vectors back onto the detector.
+    """
+    th = np.deg2rad(float(rotation_ccw_deg or 0.0))
+    M = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    return M[:, ::-1].copy() if transpose else M
+
+
+def scan_rotation_from_metadata(metadata) -> tuple[float | None, bool | None]:
+    """``(q_to_r_rotation_ccw_deg, q_transpose)`` recorded on a dataset, or None
+    for either that is not set. Reads the older ``r_to_q_rotation_cw_deg``
+    name too (the same number)."""
+    md = metadata or {}
+    rot = md.get("q_to_r_rotation_ccw_deg")
+    if rot is None:
+        rot = md.get("r_to_q_rotation_cw_deg")
+    tr = md.get("q_transpose")
+    return (None if rot is None else float(rot)), (None if tr is None else bool(tr))
+
+
 class Dataset4dstem(Dataset4d):
     """A 4D-STEM dataset class that inherits from Dataset4d.
 

@@ -599,15 +599,18 @@ class OrientationMap(AutoSerialize):
         # plan with the polar detector mask. The mask lives in the DETECTOR
         # frame: any detector-to-scan rotation recorded on the peaks rotates
         # the square aperture in the calibrated (qx, qy) frame.
+        from quantem.diffraction.calibration import q_to_r_matrix
+
         rot_deg = float(self.peaks.metadata.get("rotation_ccw_deg", 0.0) or 0.0)
+        r_to_q = np.linalg.inv(
+            q_to_r_matrix(rot_deg, bool(self.peaks.metadata.get("q_transpose", False)))
+        )
         if isinstance(detector_q_max, str) and detector_q_max == "auto":
             flat = self.peaks.select_fields("qx", "qy", "intensity").numpy().astype(np.float64)
             if flat.shape[0] == 0:
                 detector_q_max = None
             else:
-                th_b = np.deg2rad(-rot_deg)
-                rb = np.array([[np.cos(th_b), -np.sin(th_b)], [np.sin(th_b), np.cos(th_b)]])
-                det_rc = flat[:, :2] @ rb.T
+                det_rc = flat[:, :2] @ r_to_q.T
                 detector_q_max = (
                     float(np.abs(det_rc[:, 0]).max()) + self.corr_kernel_size,
                     float(np.abs(det_rc[:, 1]).max()) + self.corr_kernel_size,
@@ -619,6 +622,9 @@ class OrientationMap(AutoSerialize):
                 qx_max, qy_max = (float(v) for v in detector_q_max)
             r = self.shell_radii[:, None]
             g = self.gamma[None, :] - np.deg2rad(rot_deg)
+            # a transposed detector reads the rotated row along its columns
+            if self.peaks.metadata.get("q_transpose", False):
+                qx_max, qy_max = qy_max, qx_max
             mask = (
                 (torch.abs(r * torch.cos(g)) <= qx_max) & (torch.abs(r * torch.sin(g)) <= qy_max)
             ).to(torch.float64)
@@ -2038,10 +2044,16 @@ class OrientationMap(AutoSerialize):
         if det is not None and s_xy.shape[0]:
             det = np.atleast_1d(det).astype(float)
             qx_max, qy_max = (det[0], det[0]) if det.size == 1 else (det[0], det[1])
-            rot = np.deg2rad(-float(self.peaks.metadata.get("rotation_ccw_deg", 0.0) or 0.0))
-            c, s_ = np.cos(rot), np.sin(rot)
-            r_det = s_xy[:, 0] * c - s_xy[:, 1] * s_
-            c_det = s_xy[:, 0] * s_ + s_xy[:, 1] * c
+            from quantem.diffraction.calibration import q_to_r_matrix
+
+            r_to_q = np.linalg.inv(
+                q_to_r_matrix(
+                    float(self.peaks.metadata.get("rotation_ccw_deg", 0.0) or 0.0),
+                    bool(self.peaks.metadata.get("q_transpose", False)),
+                )
+            )
+            det = s_xy @ torch.as_tensor(r_to_q.T, dtype=s_xy.dtype)
+            r_det, c_det = det[:, 0], det[:, 1]
             on = (r_det.abs() <= qx_max) & (c_det.abs() <= qy_max)
             s_xy, s_i = s_xy[on], s_i[on]
         p_rad = float(self.power_radial)

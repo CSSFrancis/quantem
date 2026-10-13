@@ -665,9 +665,14 @@ def plot_pattern_matches(
     ix = [fields.index(f) for f in ("qx", "qy", "intensity")]
     # peaks may be rotated into the scan frame; the raw detector image is
     # not, so rotate all overlay coordinates back to the detector frame
-    rot_deg = float(peaks.metadata.get("rotation_ccw_deg", 0.0) or 0.0)
-    th = np.deg2rad(-rot_deg)
-    rot_back = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    from quantem.diffraction.calibration import q_to_r_matrix
+
+    rot_back = np.linalg.inv(
+        q_to_r_matrix(
+            float(peaks.metadata.get("rotation_ccw_deg", 0.0) or 0.0),
+            bool(peaks.metadata.get("q_transpose", False)),
+        )
+    )
 
     # a map matched with fewer matches than requested has no panel for them
     panels = [(i, m) for i, om in enumerate(oms) for m in matches if 0 <= m < om.quats.shape[2]]

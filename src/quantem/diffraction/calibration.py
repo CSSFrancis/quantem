@@ -31,6 +31,10 @@ import warnings
 import numpy as np
 import torch
 
+from quantem.core.datastructures.dataset4dstem import (  # noqa: F401  (re-exported)
+    q_to_r_matrix,
+    scan_rotation_from_metadata,
+)
 from quantem.core.datastructures.vector import Vector
 from quantem.core.io.serialize import AutoSerialize
 from quantem.diffraction.crystal import Crystal
@@ -212,6 +216,7 @@ def peaks_to_calibrated(
     rotation_ccw_deg: float = 0.0,
     ellipse=None,
     name: str = "bragg_peaks_calibrated",
+    transpose: bool = False,
 ):
     """Convert origin-corrected pixel peaks to a calibrated (qx, qy) Vector.
 
@@ -226,12 +231,16 @@ def peaks_to_calibrated(
         Diffraction-to-scan rotation: the detector coordinates are rotated
         by this angle so the pattern axes align with the scan axes. With
         this applied, in-plane orientations and strain axes are reported in
-        the image frame.
+        the image frame. The same angle as a dataset's
+        ``q_to_r_rotation_ccw_deg``; see :func:`q_to_r_matrix`.
     ellipse : array-like | None
         [e11, e12] elliptic distortion correction from calibrate_ellipse(),
         applied in the detector frame before the rotation.
     name : str, default="bragg_peaks_calibrated"
         Name of the returned Vector.
+    transpose : bool, default=False
+        Swap the detector row and column axes before the rotation (the
+        dataset's ``q_transpose``).
 
     Returns
     -------
@@ -244,10 +253,8 @@ def peaks_to_calibrated(
     qrc = flat[:, :2] * pixel_size_inv_A
     if ellipse is not None:
         qrc = qrc @ _ellipse_matrix(ellipse).T
-    if rotation_ccw_deg != 0.0:
-        th = np.deg2rad(rotation_ccw_deg)
-        rot = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
-        qrc = qrc @ rot.T
+    if rotation_ccw_deg or transpose:
+        qrc = qrc @ q_to_r_matrix(rotation_ccw_deg, transpose).T
     data = np.column_stack([qrc, flat[:, 2]])
     cells = np.split(data, np.cumsum(row_counts)[:-1])
     nested = [cells[r * scan_c : (r + 1) * scan_c] for r in range(scan_r)]
@@ -265,6 +272,7 @@ def peaks_to_calibrated(
         if key in (peaks_px.metadata or {}):
             out.metadata[key] = peaks_px.metadata[key]
     out.metadata["rotation_ccw_deg"] = float(rotation_ccw_deg)
+    out.metadata["q_transpose"] = bool(transpose)
     return out
 
 
@@ -596,8 +604,10 @@ def measure_scan_rotation(
     dataset,
     origins: np.ndarray | None = None,
     mask_radius: float | None = None,
+    transpose: bool | None = None,
     plot: bool = False,
     returnfig: bool = False,
+    return_transpose: bool = False,
 ):
     """Detector-to-scan rotation from the curl of the center-of-mass field.
 
@@ -614,6 +624,17 @@ def measure_scan_rotation(
     relationship, or the divergence sign convention of DPC). The returned
     angle is ready to pass to peaks_to_calibrated() as rotation_ccw_deg.
 
+    A detector read out with its rows and columns swapped is a reflection,
+    not a rotation, and no angle removes the curl it leaves; both
+    possibilities are tested, as ptychography does, and a transpose is
+    reported when it lowers the curl by more than 10 %. A warning flags a
+    transpose that cannot be decided, and a curl that hardly depends on the
+    angle (a ratio below 2 between its largest and smallest values), where
+    the center of mass is dominated by diffraction contrast rather than the
+    projected potential and the angle cannot be trusted. The angle and the transpose follow the convention of
+    :func:`q_to_r_matrix`, the same as ptychography's ``com_rotation_rad`` and
+    ``com_transpose``.
+
     Parameters
     ----------
     dataset : Dataset4dstem
@@ -625,16 +646,22 @@ def measure_scan_rotation(
         Restrict the center of mass to within this radius (pixels) of the
         origin -- i.e. the DPC signal of the direct beam only, excluding the
         Bragg disks. Recommended for crystalline data.
+    transpose : bool | None, default=None
+        Whether the detector axes are swapped; None tests both.
     plot : bool, default=False
         Plot the curl and divergence measures against the rotation angle.
     returnfig : bool, default=False
         With `plot`, also return the figure and axes.
+    return_transpose : bool, default=False
+        Also return the transpose.
 
     Returns
     -------
     rotation_ccw_deg : float
         Curl-minimizing rotation in [-90, 90), degrees, on a 0.25 degree
         grid; the physical answer is either this angle or 180 degrees away.
+    transpose : bool
+        Only with `return_transpose`.
     fig, ax
         Only with `plot` and `returnfig`.
     """
@@ -671,29 +698,70 @@ def measure_scan_rotation(
 
     theta = np.deg2rad(np.arange(-90, 90, 0.25))
     ct, st = np.cos(theta)[:, None, None], np.sin(theta)[:, None, None]
-    # rotated field: (r', c') = (ct * r - st * c, st * r + ct * c)
-    curl = (st * d_rr + ct * d_cr) - (ct * d_rc - st * d_cc)
-    div = (ct * d_rr - st * d_cr) + (st * d_rc + ct * d_cc)
-    curl_sq = (curl**2).mean(axis=(1, 2))
-    div_sq = (div**2).mean(axis=(1, 2))
+
+    def measures(d_rr, d_rc, d_cr, d_cc):
+        # rotated field: (r', c') = (ct * r - st * c, st * r + ct * c)
+        curl = (st * d_rr + ct * d_cr) - (ct * d_rc - st * d_cc)
+        div = (ct * d_rr - st * d_cr) + (st * d_rc + ct * d_cc)
+        return (curl**2).mean(axis=(1, 2)), (div**2).mean(axis=(1, 2))
+
+    # the transposed field is (com_c, com_r): swap the components
+    options = {False: (d_rr, d_rc, d_cr, d_cc), True: (d_cr, d_cc, d_rr, d_rc)}
+    tested = [transpose] if transpose is not None else [False, True]
+    results = {t: measures(*options[t]) for t in tested}
+    if len(tested) == 1:
+        transpose = tested[0]
+    else:
+        # a transpose is a strong claim: it must lower the curl clearly
+        c_false, c_true = results[False][0].min(), results[True][0].min()
+        transpose = bool(c_true < 0.9 * c_false)
+        if 0.9 * c_false <= c_true <= c_false / 0.9:
+            warnings.warn(
+                "the transposed and untransposed detector leave nearly the same curl "
+                f"({c_true / c_false:.2f}): the transpose is undetermined, kept "
+                f"{transpose}. Pass transpose= if it is known.",
+                stacklevel=2,
+            )
+    curl_sq, div_sq = results[transpose]
+    contrast = float(curl_sq.max() / max(curl_sq.min(), 1e-300))
+    if contrast < 2.0:
+        warnings.warn(
+            f"the curl changes by only {contrast:.2f}x over all angles: the center of mass "
+            "does not follow the projected potential here (diffraction contrast, a "
+            "crystalline specimen), so this rotation is unreliable. Use mask_radius to "
+            "keep to the direct beam, or a feature of known orientation.",
+            stacklevel=2,
+        )
 
     i_best = int(np.argmin(curl_sq))
     rotation_ccw_deg = float(np.rad2deg(theta[i_best]))
 
-    out: list = [rotation_ccw_deg]
+    out: list = [rotation_ccw_deg] + ([bool(transpose)] if return_transpose else [])
     if plot:
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(7, 4))
         deg = np.rad2deg(theta)
         ax.plot(deg, curl_sq, "k-", label="mean squared curl")
+        other = [t for t in results if t != transpose]
+        if other:
+            ax.plot(
+                deg,
+                results[other[0]][0],
+                "k:",
+                label=f"mean squared curl, transpose={other[0]}",
+            )
         ax.plot(deg, div_sq, "-", color="0.6", label="mean squared divergence")
         ax.axvline(rotation_ccw_deg, color="r", ls="--")
         ax.set_xlabel("rotation (degrees)")
         ax.set_ylabel("field measure")
         ax.set_title(
-            "scan rotation = %.1f deg (or %.1f)"
-            % (rotation_ccw_deg, rotation_ccw_deg + (180 if rotation_ccw_deg < 0 else -180))
+            "scan rotation = %.1f deg (or %.1f)%s"
+            % (
+                rotation_ccw_deg,
+                rotation_ccw_deg + (180 if rotation_ccw_deg < 0 else -180),
+                ", transposed" if transpose else "",
+            )
         )
         ax.legend()
         if returnfig:
@@ -990,11 +1058,16 @@ class DiffractionCalibration(AutoSerialize):
         :func:`calibrate_ellipse`. None applies no correction.
     rotation_ccw_deg : float, default=0.0
         Diffraction-to-scan rotation in degrees, see
-        :func:`measure_scan_rotation`.
+        :func:`measure_scan_rotation` and :func:`q_to_r_matrix`.
     metadata : dict | None
         Evidence and provenance, e.g. the reference phases, the matched
         rings and their residual, and the detector binning.
+    transpose : bool, default=False
+        Detector row and column axes swapped before the rotation.
     """
+
+    # calibrations saved before the transpose existed load without one
+    transpose = False
 
     def __init__(
         self,
@@ -1002,11 +1075,13 @@ class DiffractionCalibration(AutoSerialize):
         ellipse=None,
         rotation_ccw_deg: float = 0.0,
         metadata: dict | None = None,
+        transpose: bool = False,
     ):
         self.pixel_size = float(pixel_size)
         self.ellipse = None if ellipse is None else np.asarray(ellipse, dtype=float)
         self.rotation_ccw_deg = float(rotation_ccw_deg)
         self.metadata: dict = dict(metadata or {})
+        self.transpose = bool(transpose)
 
     def apply(self, peaks_px, name: str = "bragg_peaks_calibrated"):
         """Calibrated (qx, qy) peaks from origin-corrected pixel peaks.
@@ -1032,6 +1107,7 @@ class DiffractionCalibration(AutoSerialize):
             rotation_ccw_deg=self.rotation_ccw_deg,
             ellipse=self.ellipse,
             name=name,
+            transpose=self.transpose,
         )
         # the measured pixel size replaces whatever the dataset was carrying
         out.metadata["pixel_size"] = float(self.pixel_size)
@@ -1055,7 +1131,7 @@ class DiffractionCalibration(AutoSerialize):
         md = dict(self.metadata)
         md["binning"] = md.get("binning", 1) * factor
         return DiffractionCalibration(
-            self.pixel_size * factor, self.ellipse, self.rotation_ccw_deg, md
+            self.pixel_size * factor, self.ellipse, self.rotation_ccw_deg, md, self.transpose
         )
 
     def __repr__(self) -> str:
@@ -1073,7 +1149,8 @@ class DiffractionCalibration(AutoSerialize):
             q = ", %d rings, rms %.2f%%" % (self.metadata.get("n_rings", 0), 100 * rms)
         return (
             f"DiffractionCalibration(pixel_size={self.pixel_size:.6f} 1/A/px, "
-            f"ellipse: {e}, rotation {self.rotation_ccw_deg:g} deg{q})"
+            f"ellipse: {e}, rotation {self.rotation_ccw_deg:g} deg"
+            f"{', transposed' if self.transpose else ''}{q})"
         )
 
 
@@ -1172,6 +1249,7 @@ def calibrate(
     crystal,
     pixel_size_guess: float,
     rotation_ccw_deg: float = 0.0,
+    transpose: bool = False,
     fit_ellipse: bool = True,
     n_iter: int = 3,
     scale_search: tuple[float, float] = (0.9, 1.1),
@@ -1224,7 +1302,11 @@ def calibrate(
     pixel_size_guess : float
         Starting reciprocal pixel size (1/Angstroms per pixel).
     rotation_ccw_deg : float, default=0.0
-        Diffraction-to-scan rotation recorded on the calibration.
+        Diffraction-to-scan rotation recorded on the calibration (the
+        dataset's ``q_to_r_rotation_ccw_deg``, see :func:`q_to_r_matrix`).
+    transpose : bool, default=False
+        Detector axes swapped before the rotation, recorded on the
+        calibration (the dataset's ``q_transpose``).
     fit_ellipse : bool, default=True
         Fit the elliptic distortion as well as the scale.
     n_iter : int, default=3
@@ -1361,13 +1443,18 @@ def calibrate(
     reliable = len(table) >= 3 and residual_rms <= residual_tol and not at_edge
     peaks_0 = peaks_to_calibrated(peaks_px, pixel_size_guess)
     peaks = peaks_to_calibrated(
-        peaks_px, pixel_size, rotation_ccw_deg=rotation_ccw_deg, ellipse=ellipse
+        peaks_px,
+        pixel_size,
+        rotation_ccw_deg=rotation_ccw_deg,
+        ellipse=ellipse,
+        transpose=transpose,
     )
 
     cal = DiffractionCalibration(
         pixel_size,
         ellipse,
         rotation_ccw_deg,
+        transpose=transpose,
         metadata=dict(
             reference=[x.name for x in crystals],
             pixel_size_guess=float(pixel_size_guess),
@@ -1537,6 +1624,7 @@ def calibrate_2d(
     pixel_size_guess: float,
     energy_ev: float,
     rotation_ccw_deg: float = 0.0,
+    transpose: bool = False,
     precession_deg: float = 0.0,
     power_intensity: float = 0.5,
     k_max: float = 1.3,
@@ -1586,7 +1674,11 @@ def calibrate_2d(
     energy_ev : float
         Beam energy in eV.
     rotation_ccw_deg : float, default=0.0
-        Diffraction-to-scan rotation recorded on the calibration.
+        Diffraction-to-scan rotation recorded on the calibration (the
+        dataset's ``q_to_r_rotation_ccw_deg``, see :func:`q_to_r_matrix`).
+    transpose : bool, default=False
+        Detector axes swapped before the rotation, recorded on the
+        calibration (the dataset's ``q_transpose``).
     precession_deg : float, default=0.0
         Precession semi-angle, for the simulated pattern.
     power_intensity : float, default=0.5
@@ -1709,6 +1801,7 @@ def calibrate_2d(
         pixel_size,
         ellipse,
         rotation_ccw_deg,
+        transpose=transpose,
         metadata=dict(
             method="2d",
             reference=[x.name for x in crystals],
