@@ -48,11 +48,105 @@ def peaks_px(ti):
 @pytest.mark.parametrize("n_iter", [1, 2, 3])
 def test_calibrate_stable_in_n_iter(ti, peaks_px, n_iter):
     # each round must refine the ellipse, not replace it with the residual
-    cal = calibration.calibrate(peaks_px, ti, 0.011, n_iter=n_iter)
+    cal = calibration.calibrate(peaks_px, ti, 0.0118, n_iter=n_iter)
     assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 2e-3
     assert np.allclose(cal.ellipse, E_TRUE, atol=1.5e-3), cal.ellipse
     assert cal.metadata["reliable"]
     assert cal.metadata["n_rings"] >= 3
+
+
+def test_calibrate_wide_search(ti, peaks_px):
+    # a guess 11 % out is outside the default scan: flagged, then found with a wider one
+    with pytest.warns(UserWarning, match="edge of scale_search"):
+        cal = calibration.calibrate(peaks_px, ti, 0.011)
+    assert not cal.metadata["reliable"]
+    cal = calibration.calibrate(peaks_px, ti, 0.011, scale_search=(0.8, 1.25))
+    assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 2e-3
+    assert cal.metadata["reliable"]
+
+
+@pytest.fixture(scope="module")
+def fe():
+    xtl = Crystal.from_ase(bulk("Fe", "bcc", a=2.87, cubic=True), verbose=False)
+    xtl.calculate_structure_factors(k_max=1.6)
+    return xtl
+
+
+def _patterns(xtl, quats, ellipse, rng, scale_110=1.0, noise=0.002):
+    A_inv = np.linalg.inv(calibration._ellipse_matrix(ellipse))
+    g110 = np.sqrt(2) / 2.87
+    cells = []
+    for q in quats:
+        pat = xtl.generate_pattern(q, energy_ev=200e3, sigma_excitation=0.02)
+        qxy = np.stack([pat["qx"].numpy(), pat["qy"].numpy()], axis=1)
+        inten = pat["intensity"].numpy().copy()
+        inten[np.abs(np.hypot(qxy[:, 0], qxy[:, 1]) - g110) < 0.01] *= scale_110
+        qxy = qxy @ A_inv.T + rng.normal(0, noise, qxy.shape)
+        cells.append(np.column_stack([qxy / PIXEL_SIZE, inten]))
+    half = len(cells) // 2
+    return Vector.from_data(
+        [cells[:half], cells[half:]],
+        fields=["q_row", "q_col", "intensity"],
+        units=["px", "px", "counts"],
+        name="synthetic",
+    )
+
+
+def test_calibrate_dominant_low_ring(fe):
+    """The IM685 failure: the (110) ring holds most of the weight. A score that
+    weights the reference rings by kinematic intensity (times |g|^2) moved
+    (110) onto (211), a factor of sqrt(3); a guess within 1 % must stay put."""
+    torch.manual_seed(1)
+    rng = np.random.default_rng(1)
+    quats = [qnormalize(torch.randn(4, dtype=torch.float64)) for _ in range(80)]
+    peaks = _patterns(fe, quats, E_TRUE, rng, scale_110=30.0)
+    for guess in (0.99, 1.0, 1.01, 1.05):
+        cal = calibration.calibrate(peaks, fe, PIXEL_SIZE * guess)
+        assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 3e-3, (guess, cal)
+
+
+@pytest.fixture(scope="module")
+def fe_zone(fe):
+    """One [001] grain over the whole scan, small in-plane wobble."""
+    from quantem.diffraction.rotations import quat_from_axis_angle
+
+    torch.manual_seed(2)
+    rng = np.random.default_rng(2)
+    z = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64)
+    quats = [
+        quat_from_axis_angle(z, torch.tensor(np.deg2rad(17.0 + rng.normal(0, 0.2))))
+        for _ in range(40)
+    ]
+    return _patterns(fe, quats, E_TRUE, rng)
+
+
+def test_calibrate_single_zone(fe, fe_zone):
+    # only the rings of one zone: missing rings must cost nothing, so the ring
+    # assignment holds; the ellipse is undetermined by ring sharpness, which
+    # leaves a small scale error and a warning pointing to calibrate_2d
+    for guess in (0.97, 1.02):
+        with pytest.warns(UserWarning, match="few azimuths"):
+            cal = calibration.calibrate(fe_zone, fe, PIXEL_SIZE * guess)
+        assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 0.015, (guess, cal)
+        assert cal.metadata["azimuthal_coverage"] < 0.5
+
+
+def test_calibrate_2d_single_zone(fe, fe_zone):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    cal, fig, axs = calibration.calibrate_2d(
+        fe_zone, fe, PIXEL_SIZE * 1.02, energy_ev=200e3, plot=True, returnfig=True
+    )
+    assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 1e-3, cal
+    assert np.allclose(cal.ellipse, E_TRUE, atol=1.5e-3), cal.ellipse
+    assert cal.metadata["method"] == "2d"
+    assert cal.metadata["reliable"]
+    assert axs.shape == (2, 2)
+    assert "spots" in repr(cal)
+    plt.close(fig)
 
 
 def test_calibrate_returnfig(ti, peaks_px):
@@ -61,7 +155,7 @@ def test_calibrate_returnfig(ti, peaks_px):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    cal, fig, axs = calibration.calibrate(peaks_px, ti, 0.011, plot=True, returnfig=True)
+    cal, fig, axs = calibration.calibrate(peaks_px, ti, 0.0118, plot=True, returnfig=True)
     assert isinstance(cal, calibration.DiffractionCalibration)
     assert axs.shape == (2, 2)
     plt.close(fig)
@@ -128,7 +222,7 @@ def test_refine_calibration_empty_raises():
 
 @pytest.mark.parametrize("theta_deg", [30.0, 210.0, 125.0])
 def test_measure_scan_rotation_sign(theta_deg):
-    """A gradient field seen on a detector rotated by -theta returns theta mod 180.
+    """A gradient field seen on a detector rotated by -theta returns theta mod 180, in [-90, 90).
 
     The returned angle uses the convention of peaks_to_calibrated: rotating
     the detector field by +theta brings it back into the scan frame.
@@ -152,6 +246,7 @@ def test_measure_scan_rotation_sign(theta_deg):
             r0, c0 = H / 2 + d[i, j, 0], W / 2 + d[i, j, 1]
             arr[i, j] = np.exp(-((rows - r0) ** 2 + (cols - c0) ** 2) / (2 * 1.5**2))
     angle = calibration.measure_scan_rotation(SimpleNamespace(array=arr))
-    expected = theta_deg % 180
+    expected = (theta_deg + 90) % 180 - 90
+    assert -90 <= angle < 90
     diff = (angle - expected + 90) % 180 - 90
     assert abs(diff) < 1.0, (angle, expected)

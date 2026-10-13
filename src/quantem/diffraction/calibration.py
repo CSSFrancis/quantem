@@ -295,7 +295,7 @@ def radial_histogram(
     k_min: float = 0.05,
     k_max: float = 1.5,
     k_step: float = 0.002,
-    bragg_k_power: float = 2.0,
+    bragg_k_power: float = 0.0,
     bragg_intensity_power: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Intensity-weighted histogram of Bragg peak radii over all positions.
@@ -308,9 +308,9 @@ def radial_histogram(
         Range of the bins, 1/Angstroms.
     k_step : float, default=0.002
         Bin width, 1/Angstroms.
-    bragg_k_power : float, default=2.0
-        Each peak is weighted by ``|q| ** bragg_k_power``, which offsets the
-        fall-off of the scattering factors with q.
+    bragg_k_power : float, default=0.0
+        Each peak is weighted by ``|q| ** bragg_k_power``. Keep 0 for
+        calibration: a power of q makes the outer rings dominate.
     bragg_intensity_power : float, default=1.0
         Each peak is weighted by ``intensity ** bragg_intensity_power``; 0
         counts every peak equally.
@@ -340,7 +340,7 @@ def simulated_ring_profile(
     crystal: Crystal,
     k: np.ndarray,
     k_broadening: float = 0.01,
-    bragg_k_power: float = 2.0,
+    bragg_k_power: float = 0.0,
 ) -> np.ndarray:
     """1D ring profile of a crystal: Gaussians at |g| weighted by intensity.
 
@@ -352,7 +352,7 @@ def simulated_ring_profile(
         Scattering vectors to evaluate at, 1/Angstroms.
     k_broadening : float, default=0.01
         Gaussian standard deviation of each ring, 1/Angstroms.
-    bragg_k_power : float, default=2.0
+    bragg_k_power : float, default=0.0
         Each ring is weighted by ``|g| ** bragg_k_power`` times its intensity.
 
     Returns
@@ -502,7 +502,7 @@ def calibrate_pixel_size(
     k_min: float = 0.05,
     k_max: float = 1.3,
     k_broadening: float = 0.01,
-    bragg_k_power: float = 2.0,
+    bragg_k_power: float = 0.0,
     plot: bool = False,
     returnfig: bool = False,
 ):
@@ -528,7 +528,7 @@ def calibrate_pixel_size(
         Range of scattering vectors compared, 1/Angstroms, after scaling.
     k_broadening : float, default=0.01
         Gaussian standard deviation of the simulated rings, 1/Angstroms.
-    bragg_k_power : float, default=2.0
+    bragg_k_power : float, default=0.0
         Rings are weighted by ``|g| ** bragg_k_power``; see
         :func:`simulated_ring_profile`.
     plot : bool, default=False
@@ -609,7 +609,7 @@ def measure_scan_rotation(
 
     The curl is invariant under 180-degree rotation, so the sign of the
     measured field cannot distinguish theta from theta + 180. Only the
-    candidate in [0, 180) is returned; the other is that angle + 180. Pick
+    candidate in [-90, 90) is returned; the other is 180 degrees away. Pick
     the one consistent with a known feature (e.g. a Burgers orientation
     relationship, or the divergence sign convention of DPC). The returned
     angle is ready to pass to peaks_to_calibrated() as rotation_ccw_deg.
@@ -633,8 +633,8 @@ def measure_scan_rotation(
     Returns
     -------
     rotation_ccw_deg : float
-        Curl-minimizing rotation in [0, 180), degrees, on a 0.25 degree
-        grid; the physical answer is either this angle or this angle + 180.
+        Curl-minimizing rotation in [-90, 90), degrees, on a 0.25 degree
+        grid; the physical answer is either this angle or 180 degrees away.
     fig, ax
         Only with `plot` and `returnfig`.
     """
@@ -669,7 +669,7 @@ def measure_scan_rotation(
     d_cr = np.gradient(com_c, axis=0)
     d_cc = np.gradient(com_c, axis=1)
 
-    theta = np.deg2rad(np.arange(0, 180, 0.25))
+    theta = np.deg2rad(np.arange(-90, 90, 0.25))
     ct, st = np.cos(theta)[:, None, None], np.sin(theta)[:, None, None]
     # rotated field: (r', c') = (ct * r - st * c, st * r + ct * c)
     curl = (st * d_rr + ct * d_cr) - (ct * d_rc - st * d_cc)
@@ -692,7 +692,8 @@ def measure_scan_rotation(
         ax.set_xlabel("rotation (degrees)")
         ax.set_ylabel("field measure")
         ax.set_title(
-            "scan rotation = %.1f deg (or %.1f)" % (rotation_ccw_deg, rotation_ccw_deg + 180)
+            "scan rotation = %.1f deg (or %.1f)"
+            % (rotation_ccw_deg, rotation_ccw_deg + (180 if rotation_ccw_deg < 0 else -180))
         )
         ax.legend()
         if returnfig:
@@ -705,8 +706,9 @@ def calibrate_ellipse(
     k_min: float = 0.15,
     k_max: float = 1.4,
     n_bins: int = 800,
-    bragg_k_power: float = 2.0,
-    bragg_intensity_power: float = 1.0,
+    bragg_k_power: float = 0.0,
+    bragg_intensity_power: float = 0.5,
+    max_ellipticity: float = 0.03,
     plot: bool = False,
     returnfig: bool = False,
 ):
@@ -729,10 +731,14 @@ def calibrate_ellipse(
         Radial range (1/Angstroms) included in the sharpness measure.
     n_bins : int, default=800
         Number of log-radius bins between `k_min` and `k_max`.
-    bragg_k_power : float, default=2.0
+    bragg_k_power : float, default=0.0
         Each peak is weighted by ``|q| ** bragg_k_power``.
-    bragg_intensity_power : float, default=1.0
-        Each peak is weighted by ``intensity ** bragg_intensity_power``.
+    bragg_intensity_power : float, default=0.5
+        Each peak is weighted by ``intensity ** bragg_intensity_power``. Full
+        intensity weighting (1) lets a few strong peaks pull the fit.
+    max_ellipticity : float, default=0.03
+        Half range of the coarse grid over (e11, e12) that seeds the local
+        optimization, so it cannot stop in a local maximum of the sharpness.
     plot : bool, default=False
         Show the radial histogram before and after the correction.
     returnfig : bool, default=False
@@ -774,9 +780,13 @@ def calibrate_ellipse(
             return 0.0
         return -float((h**2).sum()) / total**2
 
+    # coarse grid first: the sharpness has local maxima between ring families
+    grid = np.linspace(-max_ellipticity, max_ellipticity, 9)
+    costs = [(cost((a, b)), a, b) for a in grid for b in grid]
+    x0 = np.array(min(costs)[1:])
     res = minimize(
         cost,
-        x0=np.zeros(2),
+        x0=x0,
         method="Nelder-Mead",
         options={"xatol": 1e-5, "fatol": 1e-12, "maxiter": 400},
     )
@@ -934,16 +944,6 @@ def _crystal_rings(crystal: Crystal, k_min: float, k_max: float) -> np.ndarray:
     return np.array(sorted(set(np.round(g[keep], 4))))
 
 
-def _histogram_maxima(peaks, k_min: float, k_max: float, bragg_k_power: float) -> np.ndarray:
-    """Radii of the local maxima of the measured radial histogram."""
-    from scipy.ndimage import gaussian_filter1d, maximum_filter1d
-
-    k, hist = radial_histogram(peaks, k_min=k_min, k_max=k_max, bragg_k_power=bragg_k_power)
-    h = gaussian_filter1d(hist, 2.0)
-    loc = (h == maximum_filter1d(h, 15)) & (h > 0.05 * h.max())
-    return k[loc]
-
-
 class DiffractionCalibration(AutoSerialize):
     """Reciprocal-space calibration of a detector, measured once and reused.
 
@@ -1042,77 +1042,110 @@ class DiffractionCalibration(AutoSerialize):
     def __repr__(self) -> str:
         e = "none" if self.ellipse is None else "e11 %+.5f e12 %+.5f" % tuple(self.ellipse)
         rms = self.metadata.get("residual_rms")
-        q = (
-            ""
-            if rms is None
-            else ", %d rings, rms %.2f%%"
-            % (
-                self.metadata.get("n_rings", 0),
-                100 * rms,
+        if rms is None:
+            q = ""
+        elif self.metadata.get("method") == "2d":
+            q = ", %s, %d spots, rms %.4f 1/A" % (
+                self.metadata.get("phase", ""),
+                self.metadata.get("n_pairs", 0),
+                rms,
             )
-        )
+        else:
+            q = ", %d rings, rms %.2f%%" % (self.metadata.get("n_rings", 0), 100 * rms)
         return (
             f"DiffractionCalibration(pixel_size={self.pixel_size:.6f} 1/A/px, "
             f"ellipse: {e}, rotation {self.rotation_ccw_deg:g} deg{q})"
         )
 
 
-def _ring_profile_scores(
-    peaks,
-    crystals,
-    scales: np.ndarray,
-    k_broadening: float,
-    k_min: float,
-    k_max: float,
-    bragg_k_power: float,
-) -> np.ndarray:
-    """Normalized overlap of the measured rings with the reference rings, for
-    each trial scale.
+def _allowed_rings(crystals, k_max: float, min_ring_intensity: float) -> np.ndarray:
+    """Radii (1/Angstroms) of the rings a crystal can show, every one counted alike.
 
-    The score is the fraction of the total measured peak weight that lands on
-    a reference ring. Two normalizations matter and both are traps. Scaling
-    the reference rather than the data moves the comparison window with the
-    scale, and re-normalizing to the weight left inside the window rewards a
-    scale for pushing peaks out of it: either one lets a wrong scale beat the
-    truth. Dividing by the total weight, counted once and independent of the
-    scale, makes a lost peak a loss.
+    A ring is kept when its strongest single reflection reaches
+    `min_ring_intensity` of the crystal's strongest reflection. Only single
+    reflections count -- no multiplicity, no ``|g|`` weighting -- because a
+    textured or single-crystal specimen shows any allowed reflection at full
+    strength or not at all, whatever a powder would give it.
     """
-    flat = peaks.select_fields("qx", "qy", "intensity").numpy().astype(np.float64)
-    qr = np.hypot(flat[:, 0], flat[:, 1])
-    weight = flat[:, 2] * qr**bragg_k_power
-    k_step = 0.002
-    k = np.arange(k_min, k_max, k_step)
-    prof = np.zeros_like(k)
+    out = []
     for xtl in crystals:
-        prof += simulated_ring_profile(xtl, k, k_broadening, bragg_k_power)
-    prof = prof / max(prof.max(), 1e-12)
-    total = float(weight.sum())
-    scores = np.zeros_like(scales)
-    for i, sc in enumerate(scales):
-        frac = (qr * sc - k_min) / k_step
-        i0 = np.floor(frac).astype(int)
-        w1 = frac - i0
-        ok = (i0 >= 0) & (i0 < k.size - 1)
-        h = np.bincount(i0[ok], weights=weight[ok] * (1 - w1[ok]), minlength=k.size)
-        h += np.bincount(i0[ok] + 1, weights=weight[ok] * w1[ok], minlength=k.size)
-        scores[i] = float((h[: k.size] * prof).sum() / total) if total > 0 else 0.0
-    return scores
+        g = xtl.g_len.numpy()
+        f = xtl.struct_factors_int.numpy()
+        nz = g > 1e-6
+        if not nz.any():
+            continue
+        keep = nz & (g < k_max) & (f >= min_ring_intensity * f[nz].max())
+        out.append(np.round(g[keep], 4))
+    return np.unique(np.concatenate(out)) if out else np.zeros(0)
 
 
-def _fit_scale(peaks, crystals, lo, hi, k_broadening, k_min, k_max, bragg_k_power, n=241):
-    """Best scale in [lo, hi] with parabolic refinement of the maximum."""
-    scales = np.linspace(lo, hi, n)
-    scores = _ring_profile_scores(
-        peaks, crystals, scales, k_broadening, k_min, k_max, bragg_k_power
+def _ring_distance(k: np.ndarray, rings: np.ndarray) -> np.ndarray:
+    """Distance from each radius to the nearest ring."""
+    j = np.clip(np.searchsorted(rings, k), 1, len(rings) - 1)
+    return np.minimum(np.abs(k - rings[j - 1]), np.abs(k - rings[j]))
+
+
+def _ring_match_scores(
+    k: np.ndarray, w: np.ndarray, rings: np.ndarray, scales: np.ndarray, sigma: float
+) -> np.ndarray:
+    """Fraction of the peak weight on an allowed ring, for each trial scale.
+
+    Positions only: every allowed ring has the same height, and a ring the
+    data does not show costs nothing, so texture, a single zone axis or
+    dynamical intensities do not pull the scale. The peak set and the
+    denominator are fixed before scaling, so a scale cannot win by pushing
+    peaks out of a window.
+    """
+    total = float(w.sum())
+    if total <= 0 or len(rings) < 2:
+        return np.zeros(len(scales))
+    return np.array(
+        [
+            float((w * np.exp(-0.5 * (_ring_distance(k * s, rings) / sigma) ** 2)).sum()) / total
+            for s in scales
+        ]
     )
-    i = int(np.argmax(scores))
-    best = float(scales[i])
-    if 0 < i < n - 1:
-        c0, c1, c2 = scores[i - 1 : i + 2]
-        denom = 4 * c1 - 2 * c0 - 2 * c2
-        if abs(denom) > 1e-12:
-            best += (c2 - c0) / denom * (scales[1] - scales[0])
-    return best, scales, scores
+
+
+def _radial_maxima(k: np.ndarray, w: np.ndarray, sigma: float, min_frac: float = 0.01):
+    """Maxima of the smoothed radial histogram: (radius, height) of each
+    measured ring, sub-bin by a parabola. A tail, a diffuse band or a rising
+    background contributes no maxima where it has no ring."""
+    from scipy.ndimage import gaussian_filter1d, maximum_filter1d
+
+    step = 0.001
+    if k.size == 0:
+        return np.zeros(0), np.zeros(0)
+    edges = np.arange(max(k.min(), 1e-3) - 5 * step, k.max() + 5 * step, step)
+    h, _ = np.histogram(k, edges, weights=w)
+    h = gaussian_filter1d(h.astype(np.float64), max(sigma / 3, step) / step)
+    centers = 0.5 * (edges[1:] + edges[:-1])
+    span = max(int(round(1.5 * sigma / step)), 3)
+    loc = np.nonzero((h == maximum_filter1d(h, 2 * span + 1)) & (h > min_frac * h.max()))[0]
+    loc = loc[(loc > 0) & (loc < len(h) - 1)]
+    c0, c1, c2 = h[loc - 1], h[loc], h[loc + 1]
+    den = c0 - 2 * c1 + c2
+    shift = np.where(den < 0, 0.5 * (c0 - c2) / np.where(den < 0, den, -1.0), 0.0)
+    return centers[loc] + shift * step, c1
+
+
+def _ring_table(k: np.ndarray, w: np.ndarray, rings: np.ndarray, sigma: float, min_frac=0.01):
+    """Measured rings matched to allowed rings: (k measured, k reference, ratio, weight).
+
+    The measured ring is the maximum of the smoothed radial histogram, not a
+    mean, so a tail on one side of a ring (overlapping disks near the beam,
+    a second phase) does not move it. Maxima below `min_frac` of the
+    strongest, or further than ``2 sigma`` from any allowed ring, are left
+    out; of several maxima on one ring the strongest is kept.
+    """
+    best: dict[int, tuple] = {}
+    for km, hm in zip(*_radial_maxima(k, w, sigma, min_frac)):
+        j = int(np.argmin(np.abs(rings - km)))
+        if abs(rings[j] - km) > 2 * sigma:
+            continue
+        if j not in best or hm > best[j][3]:
+            best[j] = (float(km), float(rings[j]), float(rings[j] / km), float(hm))
+    return [best[j] for j in sorted(best)]
 
 
 def calibrate(
@@ -1122,11 +1155,12 @@ def calibrate(
     rotation_ccw_deg: float = 0.0,
     fit_ellipse: bool = True,
     n_iter: int = 3,
-    scale_search: tuple[float, float] = (0.6, 1.7),
+    scale_search: tuple[float, float] = (0.9, 1.1),
     k_min: float = 0.05,
     k_max: float = 1.3,
     k_broadening: float = 0.01,
-    bragg_k_power: float = 2.0,
+    power_intensity: float = 0.5,
+    min_ring_intensity: float = 0.01,
     residual_tol: float = 0.01,
     plot: bool = False,
     figsize: tuple[float, float] = (13.0, 6.4),
@@ -1136,17 +1170,30 @@ def calibrate(
 ):
     """Measure the reciprocal pixel size and the elliptic distortion.
 
-    Three stages, each one removing the reason the next could fail. A coarse
-    scan over `scale_search` with a deliberately broadened ring profile finds
-    the right ring assignment even when the starting pixel size is far out;
-    a broad profile has one maximum where a sharp one has many. The ellipse
-    and the scale are then refined in turn, the ellipse in log-radius bins
-    where it does not depend on the scale, and the scale against
-    progressively sharper rings. Finally every measured ring is matched to
-    its reference ring separately, which is the only check that can tell a
+    Matches the radii of the detected peaks to the rings a reference crystal
+    can show, using ring positions only. Every allowed ring counts alike and a
+    ring missing from the data costs nothing, so the result does not depend
+    on texture, a single zone axis or dynamical intensities; the data is
+    never assumed to look like a powder pattern.
+
+    Three stages. The scale is first scanned over `scale_search` around the
+    guess for the largest fraction of the measured rings (the maxima of the
+    radial histogram, by height) that land on an allowed ring.
+    The ellipse and the scale are then refined in turn, the ellipse from the
+    sharpness of the log-radius histogram, where it does not depend on the
+    scale, and the scale as the median over rings of reference radius /
+    measured radius, each measured ring taken at its histogram maximum.
+    Finally every measured ring is checked separately, which is what tells a
     correct calibration from a plausible one: a single pixel size that
-    explains the pattern gives per-ring scale factors agreeing to a few
-    tenths of a percent with no trend in k.
+    explains the pattern gives per-ring ratios agreeing to a few tenths of a
+    percent with no trend in k.
+
+    Ring radii of one lattice repeat at fixed ratios (a bcc pattern scaled by
+    sqrt(2) still lands most peaks on rings), so a position-only match is only
+    unique over a limited range of scales. The default search, +-10 %, is
+    free of such aliases for the low-order rings; widen it only for a guess
+    that is far out, and check the result. A second, competing scale within
+    the search is reported as a warning.
 
     Parameters
     ----------
@@ -1155,8 +1202,7 @@ def calibrate(
     crystal : Crystal | list[Crystal]
         Reference phase or phases, structure factors calculated.
     pixel_size_guess : float
-        Starting reciprocal pixel size (1/Angstroms per pixel). Only the
-        order of magnitude matters; the coarse scan covers `scale_search`.
+        Starting reciprocal pixel size (1/Angstroms per pixel).
     rotation_ccw_deg : float, default=0.0
         Diffraction-to-scan rotation recorded on the calibration.
     fit_ellipse : bool, default=True
@@ -1164,18 +1210,21 @@ def calibrate(
     n_iter : int, default=3
         Ellipse and scale refinement rounds. Each round fits the ellipse
         left over after the current correction and composes the two.
-    scale_search : tuple, default=(0.6, 1.7)
-        Capture range of the coarse scan, as a multiple of the guess.
+    scale_search : tuple, default=(0.9, 1.1)
+        Range of the scale scan, as a multiple of the guess.
     k_min, k_max : float, default=0.05, 1.3
         Range of scattering vectors fit, 1/Angstroms. The ellipse fit uses
         at least 0.15 as its lower limit.
     k_broadening : float, default=0.01
-        Gaussian standard deviation of the reference rings in the fine scale
-        fit, 1/Angstroms; the coarse scan uses six times this. Measured rings
-        further than four times this from any reference ring are not counted
-        in the per-ring check.
-    bragg_k_power : float, default=2.0
-        Peaks and rings are weighted by ``|q| ** bragg_k_power``.
+        Width of a ring, 1/Angstroms: the Gaussian tolerance of the scale
+        scan, and how far a measured ring may sit from its reference ring.
+    power_intensity : float, default=0.5
+        Peaks are weighted by ``intensity ** power_intensity``; 0 counts
+        every peak alike.
+    min_ring_intensity : float, default=0.01
+        Rings whose strongest reflection is weaker than this fraction of the
+        strongest reflection are left out (single reflections, without
+        multiplicity).
     residual_tol : float, default=0.01
         Per-ring residual rms above which the fit is reported as unreliable.
     plot : bool, default=False
@@ -1185,12 +1234,10 @@ def calibrate(
         Figure size.
     marker_size : float, default=8.0
         Area of the brightest peak in the azimuth panels, where every peak is
-        drawn with area proportional to its intensity. Raise it to bring out
-        weak spots, lower it when strong ones hide the reference lines.
+        drawn with area proportional to its intensity.
     zone_axis : sequence of int, optional
         Fit only the rings of this zone, [uvw] or [UVTW] (see
-        :func:`zone_reflections`). For a specimen near one zone axis
-        everywhere, whose peaks hold no other rings.
+        :func:`zone_reflections`).
     returnfig : bool, default=False
         With `plot`, also return the figure and axes.
 
@@ -1198,81 +1245,91 @@ def calibrate(
     -------
     DiffractionCalibration
         The pixel size, ellipse and rotation. ``metadata`` holds the matched
-        rings as (measured k, reference k, ratio), their residual rms and
-        whether the fit passed `residual_tol`. With `plot` and `returnfig`,
-        ``(cal, fig, axs)`` instead, axs of shape (2, 2).
+        rings as (measured k, reference k, ratio), their residual rms,
+        whether the fit passed `residual_tol`, and the score of the best
+        competing scale relative to the chosen one (`alias_ratio`). With
+        `plot` and `returnfig`, ``(cal, fig, axs)`` instead, axs of shape
+        (2, 2).
 
     Warns
     -----
     UserWarning
-        If fewer than three rings match or their residual rms exceeds
-        `residual_tol`.
-
-    Notes
-    -----
-    The figure shows the first reference crystal before and after the fit.
-    To check every candidate phase against the result, including phases the
-    calibration was not fit to, plot :func:`plot_calibration` on the
-    calibrated peaks, or :meth:`CrystalMap.plot_calibration`.
+        If fewer than three rings match, their residual rms exceeds
+        `residual_tol`, the best scale sits at the edge of `scale_search`, a
+        competing scale scores nearly as well, or the peaks cover too few
+        azimuths to fix the ellipse (one dominant orientation: use
+        :func:`calibrate_2d`).
     """
     crystals = [crystal] if isinstance(crystal, Crystal) else list(crystal)
     for xtl in crystals:
         if xtl.g_vec is None:
             raise RuntimeError(f"{xtl.name}: run calculate_structure_factors() first")
     crystals = _restrict(crystals, zone_axis)
+    rings = _allowed_rings(crystals, k_max * scale_search[1] * 1.2, min_ring_intensity)
+    if len(rings) < 2:
+        raise ValueError("fewer than two allowed rings below k_max")
 
-    peaks_0 = peaks_to_calibrated(peaks_px, pixel_size_guess)
-    # coarse: broad rings so the score has a single maximum over a wide range
-    scale, _, _ = _fit_scale(
-        peaks_0,
-        crystals,
-        scale_search[0],
-        scale_search[1],
-        6 * k_broadening,
-        k_min,
-        k_max,
-        bragg_k_power,
-    )
+    flat = peaks_px.select_fields("q_row", "q_col", "intensity").numpy().astype(np.float64)
+    q_px = flat[:, :2]
+    weight = np.clip(flat[:, 2], 0.0, None) ** power_intensity
+
+    def radii(ellipse):
+        q = q_px if ellipse is None else q_px @ _ellipse_matrix(ellipse).T
+        return np.hypot(q[:, 0], q[:, 1]) * pixel_size_guess
+
+    # the peak set is fixed once, at the guess
+    k0 = radii(None)
+    sel = (k0 > k_min) & (k0 < k_max)
+    w = weight[sel]
+
+    # coarse: 0.05 % steps over the search range
+    scales = np.arange(scale_search[0], scale_search[1] + 2.5e-4, 5e-4)
+    # the measured rings are the maxima of the radial histogram, weighted by
+    # their height; every peak scored individually would let a diffuse band
+    # or a rising background reward the scales that crowd it into dense rings
+    k_meas, h_meas = _radial_maxima(k0[sel], w, k_broadening)
+    scores = _ring_match_scores(k_meas, h_meas, rings, scales, k_broadening)
+    i_best = int(np.argmax(scores))
+    scale = float(scales[i_best])
+    far = np.abs(scales / scale - 1) > 0.03
+    alias_ratio = float(scores[far].max() / scores[i_best]) if far.any() else 0.0
+    at_edge = i_best in (0, len(scales) - 1)
+    # azimuthal coverage (effective fraction of 5 degree bins over 180): one
+    # dominant orientation leaves the ellipse undetermined by ring sharpness
+    phi = np.mod(np.degrees(np.arctan2(q_px[sel, 1], q_px[sel, 0])), 180.0)
+    h_phi, _ = np.histogram(phi, 36, (0.0, 180.0), weights=w)
+    p_phi = h_phi[h_phi > 0] / h_phi.sum() if h_phi.sum() > 0 else np.ones(1)
+    coverage = float(np.exp(-(p_phi * np.log(p_phi)).sum()) / 36)
+
     ellipse = None
-    for it in range(max(1, n_iter)):
+    table: list = []
+    for _ in range(max(1, n_iter)):
         if fit_ellipse:
             pk = peaks_to_calibrated(peaks_px, pixel_size_guess * scale, ellipse=ellipse)
-            # the fit sees peaks with the current ellipse already applied, so
-            # it returns the residual distortion: compose it with the current
-            # correction instead of replacing it
             residual = calibrate_ellipse(
-                pk, k_min=max(k_min, 0.15), k_max=k_max, bragg_k_power=bragg_k_power
+                pk,
+                k_min=max(k_min, 0.15),
+                k_max=k_max,
+                bragg_k_power=0.0,
+                bragg_intensity_power=power_intensity,
             )
             ellipse = _compose_ellipse(residual, ellipse)
-        pk = peaks_to_calibrated(peaks_px, pixel_size_guess, ellipse=ellipse)
-        half = 0.08 / (it + 1)
-        scale, _, _ = _fit_scale(
-            pk,
-            crystals,
-            scale * (1 - half),
-            scale * (1 + half),
-            k_broadening,
-            k_min,
-            k_max,
-            bragg_k_power,
-        )
+        k = radii(ellipse)[sel]
+        table = _ring_table(k * scale, w, rings, k_broadening)
+        if table:
+            # measured radii are at the current scale: refine by the median ratio
+            scale *= float(np.median([t[2] for t in table]))
 
     pixel_size = pixel_size_guess * scale
+    k = radii(ellipse)[sel] * scale
+    table = [t[:3] for t in _ring_table(k, w, rings, k_broadening)]
+    per_ring = np.array([t[2] for t in table]) if table else np.array([np.nan])
+    residual_rms = float(np.std(per_ring / np.median(per_ring))) if table else float("nan")
+    reliable = len(table) >= 3 and residual_rms <= residual_tol and not at_edge
+    peaks_0 = peaks_to_calibrated(peaks_px, pixel_size_guess)
     peaks = peaks_to_calibrated(
         peaks_px, pixel_size, rotation_ccw_deg=rotation_ccw_deg, ellipse=ellipse
     )
-
-    rings = np.concatenate([_crystal_rings(x, k_min, k_max * 1.15) for x in crystals])
-    rings = np.array(sorted(set(np.round(rings, 4))))
-    k_meas = _histogram_maxima(peaks, k_min, k_max * 1.15, bragg_k_power)
-    table = []
-    for km in k_meas:
-        j = int(np.argmin(np.abs(rings - km)))
-        if abs(rings[j] - km) < 4 * k_broadening:
-            table.append((float(km), float(rings[j]), float(rings[j] / km)))
-    per_ring = np.array([t[2] for t in table]) if table else np.array([np.nan])
-    residual_rms = float(np.std(per_ring / np.median(per_ring))) if table else float("nan")
-    reliable = len(table) >= 3 and residual_rms <= residual_tol
 
     cal = DiffractionCalibration(
         pixel_size,
@@ -1285,11 +1342,31 @@ def calibrate(
             n_rings=len(table),
             residual_rms=residual_rms,
             rings=table,
+            alias_ratio=alias_ratio,
+            azimuthal_coverage=coverage,
             reliable=bool(reliable),
             binning=1,
         ),
     )
-    if not reliable:
+    if at_edge:
+        warnings.warn(
+            f"the best scale ({scale:.3f} x the guess) is at the edge of scale_search "
+            f"{tuple(scale_search)}: the guess is too far out, or the reference phase is wrong.",
+            stacklevel=2,
+        )
+    if fit_ellipse and coverage < 0.5:
+        warnings.warn(
+            f"the peaks cover few azimuths (coverage {coverage:.2f}): one orientation "
+            "dominates, so ring sharpness cannot fix the ellipse. Use calibrate_2d.",
+            stacklevel=2,
+        )
+    if alias_ratio > 0.9:
+        warnings.warn(
+            f"a scale more than 3 % away scores {100 * alias_ratio:.0f} % as well as the "
+            "chosen one: check the ring assignment in the plot, or narrow scale_search.",
+            stacklevel=2,
+        )
+    if not reliable and not at_edge:
         warnings.warn(
             f"calibration looks unreliable: {len(table)} rings matched, residual rms "
             f"{100 * residual_rms:.2f}% (tolerance {100 * residual_tol:.2f}%). Check the "
@@ -1323,7 +1400,7 @@ def calibrate(
             k_min=k_min,
             k_max=k_hi,
             k_broadening=kb,
-            bragg_k_power=bragg_k_power,
+            power_intensity=power_intensity,
             marker_size=marker_size,
         )
         axs[0, col].set_title(ttl, fontsize=10)
@@ -1350,6 +1427,353 @@ def calibrate(
     fig.tight_layout()
     fig.subplots_adjust(hspace=0.08)
     return (cal, fig, axs) if returnfig else cal
+
+
+def _histogram_spots(
+    q_px: np.ndarray,
+    weight: np.ndarray,
+    r_max: float,
+    bin_px: float = 0.25,
+    sigma_px: float = 0.5,
+    min_spacing_px: float = 2.0,
+    min_rel: float = 0.02,
+    max_spots: int = 80,
+):
+    """Spots of the summed 2D Bragg-vector histogram, in detector pixels.
+
+    Returns (positions (N, 2), weights (N,)): each spot is the weighted mean
+    of the raw peaks within ``min_spacing_px / 2`` of a histogram maximum,
+    strongest first. The direct beam is included.
+    """
+    from scipy.ndimage import gaussian_filter, maximum_filter
+
+    edges = np.arange(-r_max, r_max + bin_px, bin_px)
+    H, _, _ = np.histogram2d(q_px[:, 0], q_px[:, 1], [edges, edges], weights=weight)
+    H = gaussian_filter(H, sigma_px / bin_px)
+    size = max(int(round(min_spacing_px / bin_px)), 3) | 1
+    loc = np.argwhere((H == maximum_filter(H, size)) & (H > 0))
+    c = 0.5 * (edges[1:] + edges[:-1])
+    pos = np.column_stack([c[loc[:, 0]], c[loc[:, 1]]])
+    h = H[loc[:, 0], loc[:, 1]]
+    off = np.hypot(pos[:, 0], pos[:, 1]) > min_spacing_px
+    ref = h[off].max() if off.any() else h.max()
+    keep = h >= min_rel * ref
+    pos, h = pos[keep], h[keep]
+    order = np.argsort(-h)[:max_spots]
+    pos, h = pos[order], h[order]
+    # refine each on the raw peaks around it
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(q_px)
+    out = []
+    for p0 in pos:
+        idx = tree.query_ball_point(p0, 0.5 * min_spacing_px)
+        if idx:
+            ww = weight[idx]
+            out.append((ww[:, None] * q_px[idx]).sum(0) / max(ww.sum(), 1e-30))
+        else:
+            out.append(p0)
+    return np.asarray(out), h
+
+
+def _fit_affine(p: np.ndarray, g: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Weighted least-squares 2x2 M with M p ~ g."""
+    sw = np.sqrt(w)[:, None]
+    X, *_ = np.linalg.lstsq(p * sw, g * sw, rcond=None)
+    return X.T
+
+
+def _pair_spots(qm: np.ndarray, gs: np.ndarray, tol: float):
+    """Nearest simulated spot to each measured spot within `tol`, each
+    simulated spot used once (by its nearest measured spot)."""
+    d = np.linalg.norm(qm[:, None, :] - gs[None, :, :], axis=-1)
+    j = np.argmin(d, axis=1)
+    ok = d[np.arange(len(qm)), j] < tol
+    best: dict[int, int] = {}
+    for i in np.nonzero(ok)[0]:
+        if j[i] not in best or d[i, j[i]] < d[best[j[i]], j[i]]:
+            best[int(j[i])] = int(i)
+    mi = np.array(sorted(best.values()), dtype=int)
+    return mi, j[mi]
+
+
+def calibrate_2d(
+    peaks_px,
+    crystal,
+    pixel_size_guess: float,
+    energy_ev: float,
+    rotation_ccw_deg: float = 0.0,
+    precession_deg: float = 0.0,
+    power_intensity: float = 0.5,
+    k_max: float = 1.3,
+    pair_tol: tuple[float, ...] = (0.04, 0.02, 0.012),
+    min_spot_rel: float = 0.02,
+    plan_params: dict | None = None,
+    min_pairs: int = 6,
+    residual_tol: float = 0.005,
+    plot: bool = False,
+    figsize: tuple[float, float] = (13.0, 12.0),
+    returnfig: bool = False,
+):
+    """Pixel size and elliptic distortion from the dominant orientation, in 2D.
+
+    For a specimen whose patterns share one dominant orientation -- a single
+    crystal, a matrix grain, a strong fiber texture seen along its axis --
+    the sum of every detected peak over the scan is a sharp spot pattern.
+    This indexes that pattern once and fits the detector distortion to it
+    directly in 2D, with no radial (polar) histogram:
+
+    1. The peaks of every position are summed into a 2D histogram in
+       detector pixels (weight ``intensity ** power_intensity``) and its
+       spots found.
+    2. The spot pattern, at the guessed pixel size, is matched against each
+       candidate crystal with :class:`OrientationMap`; the best correlation
+       picks the phase and its orientation.
+    3. Measured spots are paired with the simulated reflections of that
+       orientation, and a general 2x2 map ``q = M p`` from pixels to
+       1/Angstroms is fit by least squares, re-pairing at each tolerance of
+       `pair_tol`. Its symmetric part ``P = sqrt(M^T M)`` is the calibration:
+       pixel size ``trace(P) / 2`` and ellipse ``P / pixel_size``. Its
+       rotation belongs to the crystal orientation, not to the detector.
+
+    An anisotropic lattice error of the reference (a strained or
+    lower-symmetry cell) is indistinguishable from detector ellipticity in a
+    single zone, so the reference should be a well-known structure.
+
+    Parameters
+    ----------
+    peaks_px : Vector
+        Origin-corrected peaks in detector pixels, (q_row, q_col, intensity).
+    crystal : Crystal | list[Crystal]
+        Candidate phase(s), structure factors calculated.
+    pixel_size_guess : float
+        Starting reciprocal pixel size (1/Angstroms per pixel), within a few
+        percent; :func:`calibrate` gives one from the rings.
+    energy_ev : float
+        Beam energy in eV.
+    rotation_ccw_deg : float, default=0.0
+        Diffraction-to-scan rotation recorded on the calibration.
+    precession_deg : float, default=0.0
+        Precession semi-angle, for the simulated pattern.
+    power_intensity : float, default=0.5
+        Peaks are weighted by ``intensity ** power_intensity`` in the
+        histogram.
+    k_max : float, default=1.3
+        Spots beyond this (1/Angstroms) are not fit.
+    pair_tol : tuple of float, default=(0.04, 0.02, 0.012)
+        Pairing tolerances (1/Angstroms) of the successive fits.
+    min_spot_rel : float, default=0.02
+        Histogram spots weaker than this fraction of the strongest (direct
+        beam excluded) are not used.
+    plan_params : dict, optional
+        Overrides for :meth:`OrientationMap.build_plan` of the indexing step.
+    min_pairs : int, default=6
+        Fewer paired spots than this is reported as unreliable.
+    residual_tol : float, default=0.005
+        Paired-spot rms residual (1/Angstroms) above which the fit is
+        reported as unreliable.
+    plot : bool, default=False
+        Show the ring comparison (top) and the 2D histogram of the peaks
+        under the simulated spots (bottom), before and after.
+    figsize : tuple, default=(13, 12)
+        Figure size.
+    returnfig : bool, default=False
+        With `plot`, also return the figure and axes.
+
+    Returns
+    -------
+    DiffractionCalibration
+        ``metadata`` records the method, the phase, the orientation
+        quaternion (detector frame, at the fitted calibration), the paired
+        spots and their rms residual. With `plot` and `returnfig`,
+        ``(cal, fig, axs)``, axs of shape (2, 2).
+    """
+    import torch
+
+    from quantem.diffraction.orientation import OrientationMap
+    from quantem.diffraction.rotations import qmult, quat_from_matrix
+
+    crystals = [crystal] if isinstance(crystal, Crystal) else list(crystal)
+    for xtl in crystals:
+        if xtl.g_vec is None:
+            raise RuntimeError(f"{xtl.name}: run calculate_structure_factors() first")
+
+    flat = peaks_px.select_fields("q_row", "q_col", "intensity").numpy().astype(np.float64)
+    q_px = flat[:, :2]
+    weight = np.clip(flat[:, 2], 0.0, None) ** power_intensity
+    r_max = min(float(np.hypot(q_px[:, 0], q_px[:, 1]).max()), k_max / pixel_size_guess)
+    inside = np.hypot(q_px[:, 0], q_px[:, 1]) < r_max
+    spots, spot_w = _histogram_spots(q_px[inside], weight[inside], r_max, min_rel=min_spot_rel)
+
+    # index the summed pattern once per candidate phase
+    pattern = np.column_stack([spots * pixel_size_guess, spot_w / spot_w.max()])
+    vec = Vector.from_data(
+        [[pattern]],
+        fields=["qx", "qy", "intensity"],
+        units=["A^-1", "A^-1", "counts"],
+        name="summed pattern",
+    )
+    plan = dict(
+        angle_step_zone_axis_deg=1.0,
+        angle_step_in_plane_deg=2.0,
+        detector_q_max=None,
+        verbose=False,
+        progress_bar=False,
+    )
+    plan.update(plan_params or {})
+    best = None
+    for xtl in crystals:
+        om = OrientationMap.from_vectors(
+            vec, xtl, energy_ev=energy_ev, precession_deg=precession_deg
+        )
+        om.build_plan(**plan)
+        om.match_orientations(num_matches=1, min_number_peaks=3, progress_bar=False)
+        om.refine_orientations(progress_bar=False)
+        corr = float(om.corr[0, 0, 0])
+        if best is None or corr > best[0]:
+            best = (corr, xtl, om)
+    corr, xtl, om = best
+    quat = om.quats[0, 0, 0].clone()
+    sim = om.generate_pattern(0, 0, k_max=k_max)
+    g = np.column_stack([sim["qx"].numpy(), sim["qy"].numpy()]).astype(np.float64)
+    gi = sim["intensity"].numpy().astype(np.float64)
+    g_keep = (np.hypot(g[:, 0], g[:, 1]) > 1e-6) & (gi > 1e-3 * gi.max())
+    g, gi = g[g_keep], gi[g_keep]
+
+    meas = np.hypot(spots[:, 0], spots[:, 1]) * pixel_size_guess > 1e-3  # no direct beam
+    p, w = spots[meas], spot_w[meas]
+    M = pixel_size_guess * np.eye(2)
+    mi = gj = np.zeros(0, dtype=int)
+    for tol in pair_tol:
+        mi, gj = _pair_spots(p @ M.T, g, tol)
+        if len(mi) < 3:
+            break
+        M = _fit_affine(p[mi], g[gj], w[mi])
+    if len(mi) < 3:
+        raise RuntimeError(
+            f"only {len(mi)} spots of the summed pattern pair with {xtl.name}: no dominant "
+            "orientation, or the pixel size guess is too far out"
+        )
+    # M = R P: P symmetric positive is the detector calibration
+    evals, evecs = np.linalg.eigh(M.T @ M)
+    P = evecs @ np.diag(np.sqrt(evals)) @ evecs.T
+    Rm = M @ np.linalg.inv(P)
+    pixel_size = float(np.trace(P) / 2)
+    A = P / pixel_size
+    ellipse = np.array([0.5 * (A[0, 0] - A[1, 1]), 0.5 * (A[0, 1] + A[1, 0])])
+    resid = p[mi] @ M.T - g[gj]
+    rms = float(np.sqrt((w[mi][:, None] * resid**2).sum() / w[mi].sum() / 2))
+    reliable = len(mi) >= min_pairs and rms <= residual_tol and np.linalg.det(Rm) > 0
+
+    # the orientation in the calibrated detector frame: undo the in-plane
+    # rotation R that M carried (lab z is the beam)
+    R3 = np.eye(3)
+    R3[:2, :2] = Rm.T
+    q_cal = qmult(quat_from_matrix(torch.as_tensor(R3, dtype=quat.dtype)), quat)
+
+    cal = DiffractionCalibration(
+        pixel_size,
+        ellipse,
+        rotation_ccw_deg,
+        metadata=dict(
+            method="2d",
+            reference=[x.name for x in crystals],
+            phase=xtl.name,
+            correlation=corr,
+            orientation=[float(v) for v in q_cal],
+            pixel_size_guess=float(pixel_size_guess),
+            n_spots=int(len(p)),
+            n_pairs=int(len(mi)),
+            residual_rms=rms,
+            in_plane_rotation_deg=float(np.degrees(np.arctan2(Rm[1, 0], Rm[0, 0]))),
+            pairs=[
+                (float(a), float(b), float(c), float(d)) for (a, b), (c, d) in zip(p[mi], g[gj])
+            ],
+            reliable=bool(reliable),
+            binning=1,
+        ),
+    )
+    if not reliable:
+        warnings.warn(
+            f"2D calibration looks unreliable: {len(mi)} spots paired with {xtl.name}, "
+            f"rms {rms:.4f} 1/A (tolerance {residual_tol}). Check that one orientation "
+            "dominates the scan and that the guess is within a few percent.",
+            stacklevel=2,
+        )
+    if not plot:
+        return cal
+
+    import matplotlib.pyplot as plt
+
+    fig, axs = plt.subplots(
+        2, 2, figsize=figsize, gridspec_kw={"height_ratios": [1, 2.1]}, squeeze=False
+    )
+    peaks_0 = peaks_to_calibrated(peaks_px, pixel_size_guess)
+    peaks_1 = peaks_to_calibrated(peaks_px, pixel_size, ellipse=ellipse)
+    k_lo = 0.1
+    for col, (pk, ttl) in enumerate(
+        (
+            (peaks_0, f"before: {pixel_size_guess:.5f} " + r"$\mathrm{\AA}^{-1}$/px"),
+            (peaks_1, f"after: {pixel_size:.5f} " + r"$\mathrm{\AA}^{-1}$/px"),
+        )
+    ):
+        plot_ring_comparison(
+            pk,
+            [xtl],
+            k_min=k_lo,
+            k_max=k_max,
+            power_intensity=power_intensity,
+            figax=(fig, [axs[0, col]]),
+        )
+        axs[0, col].set_title(ttl, fontsize=10)
+    # before: the orientation as indexed at the guess; after: rotated into
+    # the calibrated frame, P p = R^T g
+    _spot_panel(axs[1, 0], q_px * pixel_size_guess, weight, g, gi, k_max, "before")
+    _spot_panel(axs[1, 1], q_px @ P.T, weight, g @ Rm, gi, k_max, "after")
+    axs[1, 1].text(
+        0.02,
+        0.98,
+        f"{xtl.name}, {len(mi)} spots paired, rms {1e3 * rms:.1f}e-3 "
+        + r"$\mathrm{\AA}^{-1}$"
+        + f"\nellipse e11 {ellipse[0]:+.4f}  e12 {ellipse[1]:+.4f}"
+        + ("" if reliable else "\nUNRELIABLE"),
+        transform=axs[1, 1].transAxes,
+        va="top",
+        fontsize=9,
+        color="k" if reliable else "tab:red",
+        bbox=dict(facecolor="white", alpha=0.8, lw=0),
+    )
+    fig.tight_layout()
+    return (cal, fig, axs) if returnfig else cal
+
+
+def _spot_panel(ax, q, w, g, gi, k_max, title, bin_size=None):
+    """Red 2D histogram of every peak, black simulated spots over it."""
+    from scipy.ndimage import gaussian_filter
+
+    bin_size = bin_size or k_max / 250
+    edges = np.arange(-k_max, k_max + bin_size, bin_size)
+    H, _, _ = np.histogram2d(q[:, 0], q[:, 1], [edges, edges], weights=w)
+    H = gaussian_filter(H, 1.5)
+    # scaled to the Bragg spots, not the direct beam
+    c = 0.5 * (edges[1:] + edges[:-1])
+    off = np.hypot(c[:, None], c[None, :]) > 0.1
+    top = H[off].max() if (H[off] > 0).any() else max(H.max(), 1e-30)
+    ax.imshow(
+        np.clip(H / top, 0, 1) ** 0.4,
+        cmap="Reds",
+        origin="upper",
+        extent=[-k_max, k_max, k_max, -k_max],
+        interpolation="bilinear",
+    )
+    s = 3 + 12 * np.sqrt(gi / gi.max())
+    ax.scatter(g[:, 1], g[:, 0], s=s, c="k", lw=0)
+    ax.set_xlim(-k_max, k_max)
+    ax.set_ylim(k_max, -k_max)
+    ax.set_aspect("equal")
+    ax.set_xlabel(r"$q_\mathrm{col}$ (1/$\mathrm{\AA}$)")
+    ax.set_ylabel(r"$q_\mathrm{row}$ (1/$\mathrm{\AA}$)")
+    ax.set_title(title, fontsize=10)
 
 
 # reflections closer than this in |g| (1/Angstroms) are drawn as one ring
@@ -1395,7 +1819,8 @@ def _calibration_panels(
     k_min: float,
     k_max: float,
     k_broadening: float | None = None,
-    bragg_k_power: float = 2.0,
+    bragg_k_power: float = 0.0,
+    power_intensity: float = 0.5,
     marker_size: float = 8.0,
     n_rings: int = 12,
 ) -> None:
@@ -1408,6 +1833,7 @@ def _calibration_panels(
         k_max=k_max,
         k_broadening=k_broadening,
         bragg_k_power=bragg_k_power,
+        power_intensity=power_intensity,
         n_labels=n_rings,
         figax=(ax_hist.figure, [ax_hist]),
     )
@@ -1445,7 +1871,8 @@ def plot_calibration(
     k_min: float = 0.05,
     k_max: float = 1.5,
     k_broadening: float | None = None,
-    bragg_k_power: float = 2.0,
+    bragg_k_power: float = 0.0,
+    power_intensity: float = 0.5,
     marker_size: float = 8.0,
     n_rings: int = 12,
     zone_axis=None,
@@ -1472,6 +1899,8 @@ def plot_calibration(
     k_broadening : float | None
         None draws sharp ring lines in the histograms; a width (1/Angstroms)
         draws the broadened ring profile instead.
+    power_intensity : float, default=0.5
+        Peaks are weighted by ``intensity ** power_intensity`` in the histograms.
     marker_size : float, default=8.0
         Area of the brightest peak in the azimuth panels.
     n_rings : int, default=12
@@ -1516,6 +1945,7 @@ def plot_calibration(
             k_max=k_max,
             k_broadening=k_broadening,
             bragg_k_power=bragg_k_power,
+            power_intensity=power_intensity,
             marker_size=marker_size,
             n_rings=n_rings,
         )
@@ -1535,7 +1965,8 @@ def plot_ring_comparison(
     k_min: float = 0.1,
     k_max: float = 1.5,
     k_broadening: float | None = None,
-    bragg_k_power: float = 2.0,
+    bragg_k_power: float = 0.0,
+    power_intensity: float = 0.5,
     label_hkl: bool = True,
     label_min_intensity: float = 0.05,
     n_labels: int = 12,
@@ -1562,9 +1993,11 @@ def plot_ring_comparison(
     k_broadening : float | None
         None draws sharp lines at the ring positions; a value (1/Angstroms)
         draws the broadened ring profile instead.
-    bragg_k_power : float, default=2.0
+    bragg_k_power : float, default=0.0
         Measured peaks and reference rings are weighted by
         ``|q| ** bragg_k_power``.
+    power_intensity : float, default=0.5
+        Measured peaks are weighted by ``intensity ** power_intensity``.
     label_hkl : bool, default=True
         Label the strongest rings by their Miller indices.
     label_min_intensity : float, default=0.05
@@ -1587,7 +2020,13 @@ def plot_ring_comparison(
     import matplotlib.pyplot as plt
 
     xtls = _restrict(crystals, zone_axis)
-    k, hist = radial_histogram(peaks, k_min=k_min, k_max=k_max, bragg_k_power=bragg_k_power)
+    k, hist = radial_histogram(
+        peaks,
+        k_min=k_min,
+        k_max=k_max,
+        bragg_k_power=bragg_k_power,
+        bragg_intensity_power=power_intensity,
+    )
 
     n = len(xtls)
     if figax is None:

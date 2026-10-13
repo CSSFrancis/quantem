@@ -1570,7 +1570,7 @@ class BraggVectors(AutoSerialize):
         Returns
         -------
         float
-            Counter-clockwise rotation in degrees, in [0, 180).
+            Counter-clockwise rotation in degrees, in [-90, 90).
         """
         from quantem.diffraction import calibration
 
@@ -1584,16 +1584,19 @@ class BraggVectors(AutoSerialize):
         crystal,
         pixel_size_guess: float,
         rotation_ccw_deg: float = 0.0,
+        power_intensity: float = 0.5,
+        scale_search: tuple[float, float] = (0.9, 1.1),
         plot: bool = False,
         **kwargs,
     ):
         """Measure the reciprocal pixel size and the elliptic distortion.
 
-        Matches the radial distribution of the detected peaks against the
-        ring positions of a known crystal: a coarse scan over broadened
-        rings fixes the ring assignment even from a poor starting guess,
-        then the ellipse and the scale are refined in turn, and every ring is
-        checked separately. The result carries the evidence behind it and can
+        Matches the radii of the detected peaks to the rings the reference
+        crystal can show, by position only: every allowed ring counts alike
+        and a ring missing from the data costs nothing, so texture, a single
+        zone axis or dynamical intensities do not pull the scale. The scale
+        is scanned around the guess, then the ellipse and the scale are
+        refined in turn, and every ring is checked separately. The result carries the evidence behind it and can
         be saved and applied to another dataset, which is the route for a
         strained sample: measure on a standard such as nanocrystalline gold,
         save, and apply there.
@@ -1607,10 +1610,17 @@ class BraggVectors(AutoSerialize):
             Reference structure(s) with structure factors calculated.
         pixel_size_guess : float
             Starting reciprocal pixel size, 1/Angstroms per detector pixel.
-            Recovered from a factor of two out in either direction.
+            The scan covers `scale_search` around it.
         rotation_ccw_deg : float, default=0.0
             Counter-clockwise diffraction-to-scan rotation in degrees, recorded
             on the calibration for later use.
+        power_intensity : float, default=0.5
+            Peaks are weighted by ``intensity ** power_intensity``; 0 counts
+            every peak alike.
+        scale_search : tuple, default=(0.9, 1.1)
+            Range of the scale scan as a multiple of the guess. Ring radii of
+            one lattice repeat at fixed ratios, so widen it only for a guess
+            that is far out, and check the result.
         plot : bool, default=False
             Show the ring comparison before and after, for the first
             reference crystal. :meth:`CrystalMap.plot_calibration` checks
@@ -1619,7 +1629,8 @@ class BraggVectors(AutoSerialize):
             Further arguments of
             :func:`~quantem.diffraction.calibration.calibrate`, e.g.
             `zone_axis` to fit only the rings of one zone, `fit_ellipse`,
-            `scale_search`, `k_min`, `k_max`, `marker_size` and `figsize`.
+            `k_min`, `k_max`, `k_broadening`, `min_ring_intensity`,
+            `marker_size` and `figsize`.
 
         Returns
         -------
@@ -1642,6 +1653,79 @@ class BraggVectors(AutoSerialize):
             crystal,
             pixel_size_guess,
             rotation_ccw_deg=rotation_ccw_deg,
+            power_intensity=power_intensity,
+            scale_search=scale_search,
+            plot=plot,
+            **kwargs,
+        )
+        self.calibration = cal
+        return cal
+
+    def calibrate_2d(
+        self,
+        crystal,
+        pixel_size_guess: float,
+        energy_ev: float,
+        rotation_ccw_deg: float = 0.0,
+        precession_deg: float = 0.0,
+        power_intensity: float = 0.5,
+        plot: bool = False,
+        **kwargs,
+    ):
+        """Pixel size and elliptic distortion from the dominant orientation, in 2D.
+
+        For a scan dominated by one orientation (a single crystal, a matrix
+        grain), the peaks of every position summed into a 2D histogram form
+        one sharp spot pattern. It is indexed once against the candidate
+        crystal(s), and the detector distortion is fit to the paired spots
+        as a 2x2 map, with no radial histogram. Use :meth:`calibrate` for
+        polycrystalline or strongly textured data with many orientations.
+
+        Call this on origin-corrected peaks.
+
+        Parameters
+        ----------
+        crystal : Crystal or list of Crystal
+            Candidate phase(s), structure factors calculated; the best match
+            of the summed pattern picks the phase.
+        pixel_size_guess : float
+            Starting reciprocal pixel size, 1/Angstroms per detector pixel,
+            within a few percent.
+        energy_ev : float
+            Beam energy in eV.
+        rotation_ccw_deg : float, default=0.0
+            Counter-clockwise diffraction-to-scan rotation in degrees, recorded
+            on the calibration for later use.
+        precession_deg : float, default=0.0
+            Precession semi-angle of the simulated pattern.
+        power_intensity : float, default=0.5
+            Peaks are weighted by ``intensity ** power_intensity`` in the
+            histogram.
+        plot : bool, default=False
+            Show the ring comparison and the 2D histogram of the peaks under
+            the simulated spots, before and after.
+        **kwargs
+            Further arguments of
+            :func:`~quantem.diffraction.calibration.calibrate_2d`, e.g.
+            `k_max`, `pair_tol`, `plan_params` and `figsize`.
+
+        Returns
+        -------
+        DiffractionCalibration
+            The measured calibration, also stored on :attr:`calibration`.
+        """
+        from quantem.diffraction import calibration as _cal
+
+        if self.peaks is None:
+            raise ValueError("Run detect_disks() before calibrate_2d().")
+        cal = _cal.calibrate_2d(
+            self.peaks,
+            crystal,
+            pixel_size_guess,
+            energy_ev=energy_ev,
+            rotation_ccw_deg=rotation_ccw_deg,
+            precession_deg=precession_deg,
+            power_intensity=power_intensity,
             plot=plot,
             **kwargs,
         )
