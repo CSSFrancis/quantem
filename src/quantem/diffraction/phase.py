@@ -36,11 +36,6 @@ from quantem.diffraction.defaults import (
 )
 from quantem.diffraction.orientation import OrientationMap, position_mask
 
-# Diffracted intensity is strongly skewed, so a linear brightness leaves most
-# indexed positions nearly black. This exponent is applied wherever a map is
-# shaded by signal, so the phase map and the orientation maps agree.
-SHADE_GAMMA = 0.5
-
 
 def _majority_filter(phase: np.ndarray, radius: int) -> np.ndarray:
     """Replace each position by the most common phase around it.
@@ -498,10 +493,7 @@ class PhaseMap(AutoSerialize):
             the median over the indexed positions, so a crystal shows at full
             strength and only weakly diffracting positions fade.
         gamma : float, default=1.0
-            Exponent applied to the result. The default returns the raw
-            confidence, which is what a threshold should be taken on;
-            :attr:`SHADE_GAMMA` is the value used when shading a display, and
-            zero stays zero either way.
+            Exponent applied to the result.
 
         Returns
         -------
@@ -531,7 +523,7 @@ class PhaseMap(AutoSerialize):
         phase_colors: np.ndarray | None = None,
         shade_by: str = "signal",
         shade_range: tuple[float, float] | str = "auto",
-        shade_gamma: float = SHADE_GAMMA,
+        shade_gamma: float = 1.0,
         majority_filter: int = 0,
         reliability_range: tuple[float, float] | None = None,
         scalebar: dict | str | None = "auto",
@@ -561,14 +553,9 @@ class PhaseMap(AutoSerialize):
             Values mapped to black ... full color. "auto" takes a high
             percentile over the indexed positions, since the absolute scale
             depends on the data.
-        shade_gamma : float, default=:attr:`SHADE_GAMMA` (0.5)
+        shade_gamma : float, default=1.0
             Exponent applied to the brightness, ``alpha ** shade_gamma``.
-            Diffracted intensity is strongly skewed, so a linear scale leaves
-            most indexed positions dark and only the brightest grains
-            readable. Values below 1 lift the faint ones: 0.5 is the default
-            and 1.0 restores the linear scale. Zero brightness is a fixed
-            point, so vacuum and unindexed positions stay black however low
-            this is set, and the colorbars carry the same curve.
+            Values below 1 brighten faint positions.
         majority_filter : int, default=0
             Radius in probe positions of a majority filter applied to the
             phase decision for display only; the stored decision is

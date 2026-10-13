@@ -26,7 +26,7 @@ import numpy as np
 from quantem.core.io.serialize import AutoSerialize
 from quantem.diffraction.crystal import Crystal
 from quantem.diffraction.orientation import OrientationMap
-from quantem.diffraction.phase import SHADE_GAMMA, PhaseMap
+from quantem.diffraction.phase import PhaseMap
 
 
 def _common_k_max(crystals, k_max: float | None) -> float:
@@ -668,7 +668,7 @@ class CrystalMap(AutoSerialize):
         """
         return self._require_fit("signal_confidence()").signal_confidence(signal_range, gamma)
 
-    def mask(self, phase=None, signal_range="auto", gamma: float = SHADE_GAMMA) -> np.ndarray:
+    def mask(self, phase=None, signal_range="auto", gamma: float = 1.0) -> np.ndarray:
         """Display mask in [0, 1] for one crystal, or for all indexed positions.
 
         The phase decision times the diffracted-signal confidence: positions
@@ -682,12 +682,8 @@ class CrystalMap(AutoSerialize):
         signal_range : tuple or "auto"
             Passed to :meth:`signal_confidence`. Set it to override the
             automatic brightness range, e.g. (0, 500).
-        gamma : float, default=:data:`~quantem.diffraction.phase.SHADE_GAMMA`
-            Brightness exponent, the same one :meth:`plot_phase` shades with,
-            so a masked orientation map and the phase map agree. Diffracted
-            intensity is strongly skewed, so the default lifts the faint
-            positions; 1.0 gives the linear scale. Zero stays zero, so vacuum
-            is black at any value.
+        gamma : float, default=1.0
+            Exponent applied to the signal confidence.
 
         Returns
         -------
@@ -744,10 +740,9 @@ class CrystalMap(AutoSerialize):
             there is one.
         shade_range : tuple or "auto", default="auto"
             Values mapped to black ... full color.
-        shade_gamma : float, default=0.5
-            Exponent applied to the brightness. Diffracted intensity is
-            strongly skewed, so below 1 lifts the faint positions and 1.0 is
-            the linear scale. Vacuum stays black at any value.
+        shade_gamma : float, default=1.0
+            Exponent applied to the brightness. Values below 1 brighten faint
+            positions.
         majority_filter : int, default=0
             Radius in probe positions of a majority filter on the phase
             decision, for display only. 1 replaces each position by the most
@@ -781,7 +776,7 @@ class CrystalMap(AutoSerialize):
         signal_range="auto",
         shade_by: str = "signal",
         reliability_range: tuple[float, float] | str = "auto",
-        shade_gamma: float = SHADE_GAMMA,
+        shade_gamma: float = 1.0,
         correlation_range: tuple[float, float] | str = "auto",
         **kwargs,
     ):
@@ -819,10 +814,8 @@ class CrystalMap(AutoSerialize):
             zero and the 98th percentile of finite correlations at positions
             assigned to a crystal. Correlation is a cosine similarity, so a
             high value alone does not establish that a crystal is present.
-        shade_gamma : float, default=:data:`~quantem.diffraction.phase.SHADE_GAMMA`
-            Brightness exponent, the same one :meth:`plot_phase` uses. Below
-            1 lifts faint positions, 1.0 is the linear scale. Ignored when
-            `mask` is given.
+        shade_gamma : float, default=1.0
+            Exponent applied to the brightness. Ignored when `mask` is given.
         **kwargs
             Passed to :meth:`OrientationMap.plot_orientation`, e.g. `smooth`,
             and `saturation_power` and `chroma` for the color wedge.
@@ -891,7 +884,7 @@ class CrystalMap(AutoSerialize):
         phase=None,
         mask=None,
         signal_range="auto",
-        shade_gamma: float = SHADE_GAMMA,
+        shade_gamma: float = 1.0,
         **kwargs,
     ):
         """Stereographic pole figure of each crystal, masked by the phase decision.
@@ -907,8 +900,8 @@ class CrystalMap(AutoSerialize):
             Overrides the automatic phase-and-signal mask entirely.
         signal_range : tuple or "auto", default="auto"
             Diffracted intensity mapped to black ... full color.
-        shade_gamma : float, default=:data:`~quantem.diffraction.phase.SHADE_GAMMA`
-            Brightness exponent of that mask. Ignored when `mask` is given.
+        shade_gamma : float, default=1.0
+            Exponent applied to the mask. Ignored when `mask` is given.
         **kwargs
             Passed to :meth:`OrientationMap.plot_pole_figure`, e.g.
             `color_by`, `int_range` and `overlay`.
