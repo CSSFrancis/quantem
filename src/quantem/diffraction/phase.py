@@ -27,13 +27,7 @@ import torch
 from tqdm import tqdm
 
 from quantem.core.io.serialize import AutoSerialize
-from quantem.diffraction.defaults import (
-    MIN_NUMBER_PEAKS,
-    MIN_SIM_INTENSITY_REL,
-    PAIR_DISTANCE,
-    POWER_INTENSITY,
-    resolve,
-)
+from quantem.core.utils.utils import inherit
 from quantem.diffraction.orientation import OrientationMap, position_mask
 
 
@@ -164,7 +158,7 @@ class PhaseMap(AutoSerialize):
         complexity_penalty: float = 0.02,
         weight_unmatched_sim: float = 0.5,
         weight_overprediction: float = 1.0,
-        min_sim_intensity_rel: float | None = None,
+        min_sim_intensity_rel: float = 0.02,
         k_max: float | None = None,
         min_number_peaks: int | None = None,
         min_diffracted_peaks: int = 2,
@@ -206,12 +200,11 @@ class PhaseMap(AutoSerialize):
             non-precession data with strong dynamical scattering, lowering
             this weight makes the decision coverage-driven and removes the
             bias toward sparse templates.
-        min_sim_intensity_rel : float | None
+        min_sim_intensity_rel : float, default=0.02
             Simulated reflections weaker than this fraction of the pattern
             maximum are dropped before comparison: kinematically weak spots
             are frequently unobservable and should not penalize a phase whose
-            structure factors happen to include many of them. None takes
-            MIN_SIM_INTENSITY_REL (0.02).
+            structure factors happen to include many of them.
         k_max : float | None
             Restrict the comparison below this scattering vector
             (1/Angstroms).
@@ -253,16 +246,9 @@ class PhaseMap(AutoSerialize):
         oms = self.orientation_maps
         plan_md = oms[0].metadata.get("plan")
         match_md = oms[0].metadata.get("match")
-        pair_distance = resolve(pair_distance, "pair_distance", plan_md, default=PAIR_DISTANCE)
-        power_intensity = resolve(
-            power_intensity, "power_intensity", plan_md, default=POWER_INTENSITY
-        )
-        min_sim_intensity_rel = resolve(
-            min_sim_intensity_rel, "min_sim_intensity_rel", default=MIN_SIM_INTENSITY_REL
-        )
-        min_number_peaks = resolve(
-            min_number_peaks, "min_number_peaks", match_md, default=MIN_NUMBER_PEAKS
-        )
+        pair_distance = inherit(pair_distance, "pair_distance", plan_md)
+        power_intensity = inherit(power_intensity, "power_intensity", plan_md)
+        min_number_peaks = inherit(min_number_peaks, "min_number_peaks", match_md)
         self.metadata["fit"] = dict(
             positions=None if positions is None else "subset",
             pair_distance=float(pair_distance),

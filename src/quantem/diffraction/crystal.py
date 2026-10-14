@@ -30,7 +30,6 @@ from ase import Atoms
 from ase.data import chemical_symbols
 
 from quantem.core.io.serialize import AutoSerialize
-from quantem.diffraction.defaults import SIGMA_EXCITATION
 from quantem.diffraction.rotations import qrotate, symmetry_quaternions
 
 # unicode combining overline, applies to the preceding character
@@ -1240,7 +1239,7 @@ class Crystal(AutoSerialize):
         self,
         orientation: torch.Tensor,
         energy_ev: float = 300e3,
-        sigma_excitation: float = SIGMA_EXCITATION,
+        sigma_excitation: float = 0.04,
         tol_excitation_mult: float = 3.0,
         k_max: float | None = None,
         precession_deg: float = 0.0,
@@ -1265,10 +1264,9 @@ class Crystal(AutoSerialize):
             Unit quaternion (4,) rotating crystal vectors into the lab frame.
         energy_ev : float, default=300e3
             Beam energy in eV.
-        sigma_excitation : float, default=SIGMA_EXCITATION
+        sigma_excitation : float, default=0.04
             Excitation error tolerance (1/Angstroms) in the shape-factor
-            envelope exp(-s_g^2 / 2 sigma^2); the default is
-            :data:`quantem.diffraction.defaults.SIGMA_EXCITATION`.
+            envelope exp(-s_g^2 / 2 sigma^2).
         tol_excitation_mult : float, default=3.0
             Include reflections with |s_g| below this multiple of sigma.
         k_max : float | None

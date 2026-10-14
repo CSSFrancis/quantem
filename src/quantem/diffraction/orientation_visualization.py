@@ -19,13 +19,6 @@ DEFAULT_PHASE_COLORS = np.array(
         [0.85, 0.50, 0.80],  # purple
     ]
 )
-# exponent on the distance from the wedge centre: >1 widens the white centre
-# and softens the transition into it, <1 shrinks it (much below 0.5 leaves a
-# bright point at the centre)
-IPF_SATURATION_POWER = 0.5
-# colorfulness relative to the corner colors: 1 keeps them exact, lower values
-# wash the whole wedge toward white
-IPF_CHROMA = 1.0
 # corner colors: full red, green capped to avoid the fluorescent look, blue
 # lifted off pure dark blue; pairwise blends give near-max-chroma orange,
 # cyan and violet along the edges
@@ -76,8 +69,8 @@ def phase_color_cycle(n: int, colors=None) -> np.ndarray:
 
 def _bary_to_rgb(
     w: np.ndarray,
-    saturation_power: float | None = None,
-    chroma: float | None = None,
+    saturation_power: float = 0.5,
+    chroma: float = 1.0,
 ) -> np.ndarray:
     """Barycentric wedge weights (..., 3) to RGB.
 
@@ -94,22 +87,20 @@ def _bary_to_rgb(
     ----------
     w : np.ndarray
         Barycentric coordinates in the fundamental wedge, (..., 3).
-    saturation_power : float | None
+    saturation_power : float, default=0.5
         Exponent on the distance from the wedge centre. Above 1 the color
         builds up more slowly away from the centre, widening the white region
-        and softening the transition into it; below 1 shrinks it. None takes
-        `IPF_SATURATION_POWER`.
-    chroma : float | None
+        and softening the transition into it; below 1 shrinks it (much below
+        0.5 leaves a bright point at the centre).
+    chroma : float, default=1.0
         Colorfulness relative to the corner colors: 1 keeps them exact, lower
-        washes the wedge toward white. None takes `IPF_CHROMA`.
+        washes the wedge toward white.
 
     Returns
     -------
     np.ndarray
         RGB array (..., 3) in [0, 1].
     """
-    saturation_power = IPF_SATURATION_POWER if saturation_power is None else saturation_power
-    chroma = IPF_CHROMA if chroma is None else chroma
     w = np.clip(np.asarray(w, dtype=float), 0, None)
     w = w / np.clip(w.sum(axis=-1, keepdims=True), 1e-12, None)
     u = w / np.clip((w**4).sum(axis=-1, keepdims=True) ** 0.25, 1e-12, None)
@@ -172,8 +163,8 @@ def ipf_color(
     orientations: torch.Tensor,
     crystal: Crystal,
     direction: str | torch.Tensor = "z",
-    saturation_power: float | None = None,
-    chroma: float | None = None,
+    saturation_power: float = 0.5,
+    chroma: float = 1.0,
 ) -> np.ndarray:
     """Inverse pole figure RGB colors for orientations.
 
@@ -190,9 +181,9 @@ def ipf_color(
         and "c"). A number is an in-plane angle in degrees from the column
         axis toward the row axis; a 2 or 3 element vector is an explicit
         (row, col[, z]) direction.
-    saturation_power : float | None
+    saturation_power : float, default=0.5
         Width of the white centre; see :func:`_bary_to_rgb`.
-    chroma : float | None
+    chroma : float, default=1.0
         Colorfulness relative to the corner colors; see :func:`_bary_to_rgb`.
 
     Returns
@@ -212,9 +203,7 @@ def ipf_color(
 
         az = (torch.atan2(v[..., 1], v[..., 0]) / (2 * np.pi)) % 1.0
         pol = torch.acos(v[..., 2].clamp(-1, 1)) / (np.pi / 2)
-        sat = pol.clamp(0, 1) ** (
-            IPF_SATURATION_POWER if saturation_power is None else saturation_power
-        )
+        sat = pol.clamp(0, 1) ** saturation_power
         hsv = torch.stack((az, sat, torch.ones_like(az)), dim=-1)
         return hsv_to_rgb(hsv.numpy())
 
@@ -293,8 +282,8 @@ def wedge_legend(
     labels: bool = True,
     orientation: str = "horizontal",
     fontsize: int = 11,
-    saturation_power: float | None = None,
-    chroma: float | None = None,
+    saturation_power: float = 0.5,
+    chroma: float = 1.0,
 ) -> None:
     """Draw the labeled IPF color triangle for the crystal's fundamental wedge.
 
@@ -385,8 +374,8 @@ def plot_orientation_map(
     title: str | None = None,
     fold: bool | str = "auto",
     smooth: dict | bool | None = None,
-    saturation_power: float | None = None,
-    chroma: float | None = None,
+    saturation_power: float = 0.5,
+    chroma: float = 1.0,
 ):
     """IPF-colored orientation map with the wedge legend in an adjacent panel.
 
@@ -430,13 +419,13 @@ def plot_orientation_map(
         a dict naming the values you want, such as
         {"sigma_px": 1.0, "sigma_deg": 1.0, "max_angle_deg": 5.0}, which is
         also what True uses.
-    saturation_power : float | None
+    saturation_power : float, default=0.5
         Widens or narrows the white centre of the color wedge. Above 1 covers
         a wider range of orientations near the wedge centre and softens the
-        transition into it. None takes `IPF_SATURATION_POWER`.
-    chroma : float | None
+        transition into it.
+    chroma : float, default=1.0
         Colorfulness relative to the corner colors: 1 keeps them exact, lower
-        washes the map toward white. None takes `IPF_CHROMA`.
+        washes the map toward white.
         The legend is drawn with the same values.
     scalebar : dict | None
         Real-space scale bar, e.g. {"sampling": 30, "units": "A"}.
@@ -1129,8 +1118,8 @@ def plot_pole_figure(
     label: str | None = None,
     grid: bool = True,
     overlay: dict | None = None,
-    saturation_power: float | None = None,
-    chroma: float | None = None,
+    saturation_power: float = 0.5,
+    chroma: float = 1.0,
     figax=None,
 ):
     """Stereographic pole figure of a crystal direction family over the map.
@@ -1174,7 +1163,7 @@ def plot_pole_figure(
         "label": "<110> beta"}. Otherwise fixed orientations are drawn as
         open markers: {"quats": q, "crystal": xtl, "pole": (1, 1, 0),
         "label": ...}. Poles are Miller indices of the overlay's crystal.
-    saturation_power, chroma : float | None
+    saturation_power, chroma : float, default=0.5, 1.0
         Color wedge shape, used when `color_by` is "ipf"; see
         :func:`plot_orientation_map`.
     figax : (fig, ax) | (fig, (ax, ax_legend)) | None

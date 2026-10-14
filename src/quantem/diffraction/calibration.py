@@ -38,7 +38,6 @@ from quantem.core.datastructures.dataset4dstem import (  # noqa: F401  (re-expor
 from quantem.core.datastructures.vector import Vector
 from quantem.core.io.serialize import AutoSerialize
 from quantem.diffraction.crystal import Crystal
-from quantem.diffraction.defaults import MIN_NUMBER_PEAKS
 
 
 def _measure_raw_origins(bragg_vectors, search_radius: float, center=None) -> np.ndarray:
@@ -384,7 +383,7 @@ def calibrate_pixel_size_matching(
     subsample: int = 8,
     angle_step_deg: float = 3.0,
     corr_kernel_size: float = 0.02,
-    min_number_peaks: int = MIN_NUMBER_PEAKS,
+    min_number_peaks: int = 5,
     plot: bool = False,
     return_scores: bool = False,
     returnfig: bool = False,
@@ -422,7 +421,7 @@ def calibrate_pixel_size_matching(
         Matching kernel width, 1/Angstroms. Keep it near the peak position
         noise: a wide kernel gives partial credit to near-coincident rings
         at a wrong scale.
-    min_number_peaks : int, default=MIN_NUMBER_PEAKS
+    min_number_peaks : int, default=5
         Positions with fewer peaks are not matched.
     plot : bool, default=False
         Plot the score against the scale factor.

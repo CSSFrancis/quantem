@@ -30,16 +30,8 @@ from tqdm import tqdm
 
 from quantem.core.datastructures.vector import Vector
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import electron_wavelength_angstrom
+from quantem.core.utils.utils import electron_wavelength_angstrom, inherit
 from quantem.diffraction.crystal import Crystal
-from quantem.diffraction.defaults import (
-    MIN_NUMBER_PEAKS,
-    MIN_PAIRS,
-    PAIR_DISTANCE,
-    POWER_INTENSITY,
-    SIGMA_EXCITATION,
-    resolve,
-)
 from quantem.diffraction.rotations import (
     misorientation_angle_deg,
     qconj,
@@ -420,10 +412,10 @@ class OrientationMap(AutoSerialize):
         zone_axis_range="auto",
         fiber_axis=None,
         fiber_angle_deg: float = 0.0,
-        corr_kernel_size: float = PAIR_DISTANCE,
-        sigma_excitation: float = SIGMA_EXCITATION,
+        corr_kernel_size: float = 0.05,
+        sigma_excitation: float = 0.04,
         power_radial: float = 1.0,
-        power_intensity: float = POWER_INTENSITY,
+        power_intensity: float = 0.25,
         power_intensity_experiment: float | None = None,
         tol_shell_distance: float = 0.01,
         detector_q_max: float | tuple[float, float] | str | None = "auto",
@@ -486,7 +478,7 @@ class OrientationMap(AutoSerialize):
             from_vectors, the envelope of every library reflection is its
             exact average over that illumination
             (quantem.diffraction.illumination).
-        power_radial, power_intensity : float
+        power_radial, power_intensity : float, default=1.0, 0.25
             Weighting prefactor q^power_radial * |V_g|^power_intensity for
             library peaks. power_intensity=0 matches on positions only
             (best for strongly dynamical data).
@@ -942,7 +934,7 @@ class OrientationMap(AutoSerialize):
         num_matches: int = 1,
         positions=None,
         include_mirror: bool = True,
-        min_number_peaks: int | None = None,
+        min_number_peaks: int = 5,
         min_angle_between_matches_deg: float = 15.0,
         suppress_matched: float = 1.0,
         top_k_matches: int = 256,
@@ -983,9 +975,9 @@ class OrientationMap(AutoSerialize):
             Also correlate against the in-plane mirrored pattern, testing
             inversion-related (opposite hemisphere) zone axes at no library
             cost. Exact in the flat-Ewald / Friedel limit.
-        min_number_peaks : int | None
+        min_number_peaks : int, default=5
             Skip positions with fewer detected peaks (including the direct
-            beam); defaults to MIN_NUMBER_PEAKS (5).
+            beam).
         suppress_matched : float, default=1.0
             Fraction of each accepted match subtracted from the measured
             polar image before the next match is sought, so later matches
@@ -1041,7 +1033,6 @@ class OrientationMap(AutoSerialize):
         """
         if self.plan_fft is None:
             raise RuntimeError("Run build_plan() first.")
-        min_number_peaks = resolve(min_number_peaks, "min_number_peaks", default=MIN_NUMBER_PEAKS)
         self.metadata["match"] = dict(
             num_matches=int(num_matches),
             positions=None if positions is None else "subset",
@@ -1435,7 +1426,7 @@ class OrientationMap(AutoSerialize):
         positions=None,
         pair_distance: float | None = None,
         sigma_excitation: float | None = None,
-        min_pairs: int | None = None,
+        min_pairs: int = 4,
         refine_tilt: bool = False,
         refine_zone: bool = True,
         zone_search_deg: float = 1.5,
@@ -1483,8 +1474,8 @@ class OrientationMap(AutoSerialize):
         sigma_excitation : float | None
             Excitation error envelope used for simulation; defaults to the
             plan's value.
-        min_pairs : int | None
-            Skip positions with fewer paired peaks; defaults to MIN_PAIRS (4).
+        min_pairs : int, default=4
+            Skip positions with fewer paired peaks.
         refine_tilt : bool, default=False
             Also solve the two tilt components from peak positions. Only
             meaningful for noise-free simulated data.
@@ -1504,7 +1495,8 @@ class OrientationMap(AutoSerialize):
             out of its basin. Defaults to 0.75 * the plan's zone step.
         power_intensity : float | None
             Power applied to the measured and predicted intensities in the
-            tilt envelope fit, inherited from the plan (0.25 by default).
+            tilt envelope fit, inherited from the plan, or 0.25 if the
+            plan matches positions only.
             Linear intensities let the strongest reflections dominate and,
             on dynamical data, drive the fit to the edge of the search range.
         sigma_envelope : float | None
@@ -1570,11 +1562,10 @@ class OrientationMap(AutoSerialize):
         """
         assert self.quats is not None
         plan_md = self.metadata.get("plan")
-        delta = resolve(pair_distance, "pair_distance", plan_md, default=self.corr_kernel_size)
-        sigma = resolve(
+        delta = inherit(pair_distance, "pair_distance", plan_md, default=self.corr_kernel_size)
+        sigma = inherit(
             sigma_excitation, "sigma_excitation", plan_md, default=self.sigma_excitation
         )
-        min_pairs = resolve(min_pairs, "min_pairs", default=MIN_PAIRS)
         self.metadata["refine"] = dict(
             num_iterations=int(num_iterations),
             positions=None if positions is None else "subset",
@@ -1600,16 +1591,11 @@ class OrientationMap(AutoSerialize):
         g_all = self.crystal.g_vec
         lam = self.wavelength
         sigma_env = sigma_envelope if sigma_envelope is not None else sigma / 2
-        power_env = resolve(
-            power_intensity,
-            "power_intensity",
-            self.metadata.get("plan", {}),
-            default=POWER_INTENSITY,
-        )
+        power_env = inherit(power_intensity, "power_intensity", plan_md)
         if power_env <= 0:
             # a positions-only plan (power 0) carries no intensity weighting;
             # the envelope fit still needs one
-            power_env = POWER_INTENSITY
+            power_env = 0.25
         prec_ill = float(self.metadata.get("precession_deg", 0.0) or 0.0)
         conv_ill = float(self.metadata.get("semiconv_mrad", 0.0) or 0.0)
         n_rod = self._foil_normal_crystal()
@@ -2082,7 +2068,7 @@ class OrientationMap(AutoSerialize):
         refine_zone: bool,
         progress_bar,
         chunk: int = 64,
-        power_env: float = POWER_INTENSITY,
+        power_env: float = 0.25,
     ) -> None:
         """Chunk-vectorized in-plane + envelope refinement of the active positions."""
         from quantem.diffraction.rotations import quat_to_matrix
@@ -2319,7 +2305,7 @@ class OrientationMap(AutoSerialize):
         self,
         other: "OrientationMap",
         delete_radius: float = 0.04,
-        min_number_peaks: int = MIN_NUMBER_PEAKS,
+        min_number_peaks: int = 5,
         min_corr_other: float = 0.0,
         progress_bar: bool = True,
     ) -> "OrientationMap":
@@ -2342,7 +2328,7 @@ class OrientationMap(AutoSerialize):
         delete_radius : float, default=0.04
             Measured peaks within this distance (1/Angstroms) of one of the
             other crystal's simulated peaks are removed.
-        min_number_peaks : int, default=MIN_NUMBER_PEAKS (5)
+        min_number_peaks : int, default=5
             Positions with fewer measured peaks, or fewer residual peaks,
             are not re-matched.
         min_corr_other : float, default=0.0
@@ -2561,7 +2547,7 @@ class OrientationMap(AutoSerialize):
         self,
         match: int = 0,
         pair_distance: float | None = None,
-        min_pairs: int | None = None,
+        min_pairs: int = 4,
         mask: np.ndarray | None = None,
         ds_sampling: float | None = None,
         ds_units: str | None = None,
@@ -2583,9 +2569,8 @@ class OrientationMap(AutoSerialize):
         pair_distance : float | None
             Largest distance (1/Angstroms) between a simulated and a measured
             peak that are paired; inherits the refinement's, then the plan's.
-        min_pairs : int | None
-            Positions with fewer paired peaks are left as NaN; inherits the
-            refinement's value, else MIN_PAIRS (4).
+        min_pairs : int, default=4
+            Positions with fewer paired peaks are left as NaN.
         mask : np.ndarray | None
             (R, C) boolean or weight mask of positions to measure. A position
             is measured where the mask is above 0.5, the same rule as
@@ -2610,14 +2595,13 @@ class OrientationMap(AutoSerialize):
         from quantem.diffraction.strain import StrainMap
 
         assert self.quats is not None
-        delta = resolve(
+        delta = inherit(
             pair_distance,
             "pair_distance",
             self.metadata.get("refine"),
             self.metadata.get("plan"),
             default=self.corr_kernel_size,
         )
-        min_pairs = resolve(min_pairs, "min_pairs", self.metadata.get("refine"), default=MIN_PAIRS)
         self.metadata["strain"] = dict(
             match=int(match), pair_distance=float(delta), min_pairs=int(min_pairs)
         )

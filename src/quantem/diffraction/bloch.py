@@ -44,16 +44,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from quantem.core.utils.utils import electron_wavelength_angstrom
+from quantem.core.utils.utils import electron_wavelength_angstrom, inherit
 from quantem.diffraction.crystal import Crystal
-from quantem.diffraction.defaults import (
-    MIN_NUMBER_PEAKS,
-    MIN_SIM_INTENSITY_REL,
-    PAIR_DISTANCE,
-    POWER_INTENSITY,
-    SG_MAX,
-    resolve,
-)
 from quantem.diffraction.rotations import qrotate, sample_zone_axes
 
 
@@ -251,7 +243,7 @@ def select_dynamical_beams(
     orientation: torch.Tensor,
     energy_ev: float,
     alpha_max_rad: float = 0.0,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     deform: torch.Tensor | None = None,
 ) -> torch.Tensor:
@@ -274,7 +266,7 @@ def select_dynamical_beams(
         Beam energy in eV.
     alpha_max_rad : float, default=0.0
         Largest incident tilt from the optic axis, in radians.
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff in 1/Angstroms at zero tilt.
     k_max : float | None
         Largest |g| in 1/Angstroms; None keeps every candidate reflection.
@@ -305,7 +297,7 @@ def dynamical_pattern(
     orientation: torch.Tensor,
     thicknesses_A: torch.Tensor | np.ndarray | float,
     energy_ev: float = 300e3,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
 ) -> dict[str, torch.Tensor]:
     """Bloch-wave diffraction intensities for one orientation, all thicknesses.
@@ -326,7 +318,7 @@ def dynamical_pattern(
         Specimen thicknesses in Angstroms.
     energy_ev : float, default=300e3
         Beam energy in eV.
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms) for including a beam.
     k_max : float | None
         Largest |g| (1/Angstroms) of an included beam; None keeps every
@@ -404,7 +396,7 @@ def refine_thickness(
     thicknesses_A: np.ndarray | None = None,
     pair_distance: float | None = None,
     power_intensity: float | None = None,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     min_number_peaks: int | None = None,
     progress_bar: bool = True,
@@ -434,7 +426,7 @@ def refine_thickness(
         peak are paired.
     power_intensity : float | None
         Intensities are compared as I ** power_intensity.
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms) of the Bloch beam list.
     k_max : float | None
         Largest |g| (1/Angstroms) of a beam; None keeps every reflection
@@ -460,11 +452,9 @@ def refine_thickness(
 
     oms = phase_map.orientation_maps
     fit_md = phase_map.metadata.get("fit") if hasattr(phase_map, "metadata") else None
-    pair_distance = resolve(pair_distance, "pair_distance", fit_md, default=PAIR_DISTANCE)
-    power_intensity = resolve(power_intensity, "power_intensity", fit_md, default=POWER_INTENSITY)
-    min_number_peaks = int(
-        resolve(min_number_peaks, "min_number_peaks", fit_md, default=MIN_NUMBER_PEAKS)
-    )
+    pair_distance = inherit(pair_distance, "pair_distance", fit_md)
+    power_intensity = inherit(power_intensity, "power_intensity", fit_md)
+    min_number_peaks = int(inherit(min_number_peaks, "min_number_peaks", fit_md))
     if min_number_peaks < 3:
         raise ValueError(
             f"min_number_peaks={min_number_peaks}: a dynamical fit needs at least the "
@@ -748,7 +738,7 @@ def calculate_cbed(
     energy_ev: float = 300e3,
     semiconv_mrad: float = 3.0,
     n_rings: int = 8,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     pixel_size: float | None = None,
     q_max_plot: float | None = None,
@@ -778,7 +768,7 @@ def calculate_cbed(
         the smallest g spacing times the wavelength.
     n_rings : int, default=8
         Radial sampling rings across the aperture (~200 tilts at 8).
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms) for beam selection, widened
         automatically by the aperture tilt range.
     k_max : float | None
@@ -861,7 +851,7 @@ def calculate_lacbed(
     energy_ev: float = 300e3,
     semiconv_mrad: float = 10.0,
     n_pixels: int = 48,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     tilt_batch: int = 64,
 ) -> dict:
@@ -888,7 +878,7 @@ def calculate_lacbed(
         Convergence semiangle in mrad.
     n_pixels : int, default=48
         Pixels across the disk (the incident-tilt sampling).
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms), widened automatically by
         the aperture tilt range.
     k_max : float | None
@@ -1070,7 +1060,7 @@ def calculate_kossel(
         Detector pixels across the pattern (also the tilt sampling; the
         1-2 mrad dynamical line widths need ~0.5 mrad per pixel).
     sg_max : float, default=0.05
-        Excitation error cutoff (1/Angstroms). Smaller than the SG_MAX of
+        Excitation error cutoff (1/Angstroms). Smaller than the 0.1 default of
         the spot pattern functions: the beam list is widened by the
         aperture (alpha |g|, already 0.04 1/A for |g| = 1 at 40 mrad), so
         the base cutoff can be tighter without losing lines, and the
@@ -1275,7 +1265,7 @@ def calculate_kossel_reference(
     sg_max : float, default=0.05
         Excitation error cutoff (1/Angstroms) at the center of each chunk
         of directions, widened by the chunk's angular radius; as in
-        calculate_kossel, tighter than SG_MAX because of that widening.
+        calculate_kossel, tighter than the 0.1 default of the spot patterns.
     k_max : float | None
         Largest |g| (1/Angstroms) of an included beam; None keeps every
         reflection of the factor set, which is slow for large sets. The
@@ -2280,7 +2270,7 @@ def average_bloch_fourier(
     thicknesses_A,
     energy_ev: float,
     precession_deg: float,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     deform: torch.Tensor | None = None,
     beams: torch.Tensor | None = None,
@@ -2338,7 +2328,7 @@ def average_bloch_fourier(
         Beam energy in eV.
     precession_deg : float
         Precession semi-angle in degrees.
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms) of the beam list.
     k_max : float | None
         Largest |g| (1/Angstroms) of a beam.
@@ -2640,7 +2630,7 @@ def refine_dynamical(
     pair_distance: float | None = None,
     power_intensity: float | None = None,
     min_sim_intensity_rel: float | None = None,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     min_number_peaks: int | None = None,
     mask: np.ndarray | None = None,
@@ -2730,9 +2720,8 @@ def refine_dynamical(
     min_sim_intensity_rel : float | None
         Unpaired simulated beams weaker than this fraction of the
         strongest simulated beam do not count against a candidate (the
-        detector would not have seen them). Inherited from the phase fit,
-        else MIN_SIM_INTENSITY_REL (0.02).
-    sg_max : float, default=SG_MAX
+        detector would not have seen them). Inherited from the phase fit.
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms) of the Bloch beam list,
         widened by the tilt search range and the illumination.
     k_max : float | None
@@ -2843,21 +2832,17 @@ def refine_dynamical(
     oms = phase_map.orientation_maps
     fit_md = phase_map.metadata.get("fit") if hasattr(phase_map, "metadata") else None
     om_md = oms[0].metadata if hasattr(oms[0], "metadata") else None
-    pair_distance = resolve(pair_distance, "pair_distance", fit_md, default=PAIR_DISTANCE)
-    power_intensity = resolve(power_intensity, "power_intensity", fit_md, default=POWER_INTENSITY)
-    min_sim_intensity_rel = resolve(
-        min_sim_intensity_rel, "min_sim_intensity_rel", fit_md, default=MIN_SIM_INTENSITY_REL
-    )
-    min_number_peaks = int(
-        resolve(min_number_peaks, "min_number_peaks", fit_md, default=MIN_NUMBER_PEAKS)
-    )
+    pair_distance = inherit(pair_distance, "pair_distance", fit_md)
+    power_intensity = inherit(power_intensity, "power_intensity", fit_md)
+    min_sim_intensity_rel = inherit(min_sim_intensity_rel, "min_sim_intensity_rel", fit_md)
+    min_number_peaks = int(inherit(min_number_peaks, "min_number_peaks", fit_md))
     if min_number_peaks < 3:
         raise ValueError(
             f"min_number_peaks={min_number_peaks}: a dynamical fit needs at least the "
             "direct beam and two non-collinear reflections"
         )
-    precession_deg = float(resolve(precession_deg, "precession_deg", om_md, default=0.0))
-    semiconv_mrad = float(resolve(semiconv_mrad, "semiconv_mrad", om_md, default=0.0))
+    precession_deg = float(inherit(precession_deg, "precession_deg", om_md, default=0.0))
+    semiconv_mrad = float(inherit(semiconv_mrad, "semiconv_mrad", om_md, default=0.0))
     if n_precession_search is None:
         n_precession_search = max(8, n_precession // 2)
     used = dict(
@@ -3708,7 +3693,7 @@ def render_pattern_image(
     edge_px: float = 1.0,
     tilts: torch.Tensor | None = None,
     trial_tilts: torch.Tensor | None = None,
-    sg_max: float = SG_MAX,
+    sg_max: float = 0.1,
     k_max: float | None = None,
     fast_absorption: bool = True,
     tilt_weights: torch.Tensor | None = None,
@@ -3754,7 +3739,7 @@ def render_pattern_image(
     trial_tilts : torch.Tensor | None
         (M, 2) crystal tilts about the lab x and y axes (radians); none if
         None.
-    sg_max : float, default=SG_MAX
+    sg_max : float, default=0.1
         Excitation error cutoff (1/Angstroms) of the beam list.
     k_max : float | None
         Largest |g| (1/Angstroms) of a beam.
@@ -3947,9 +3932,9 @@ def fit_disk_shape(
         Background model of the image cost: a constant, or a quadratic in
         the distance from the direct beam.
     sg_max, k_max : float | None
-        Beam set; inherited from the result's metadata (SG_MAX if absent).
+        Beam set; inherited from the result's metadata.
     fast_absorption : bool | None
-        First-order absorption; inherited (True if absent).
+        First-order absorption; inherited.
     progress_bar : bool, default=True
         Show a progress bar over positions.
 
@@ -3964,13 +3949,11 @@ def fit_disk_shape(
     cands = phase_map.candidates
     md = result.get("metadata", {})
     energy_ev = oms[0].energy_ev
-    power_intensity = float(
-        resolve(power_intensity, "power_intensity", md, default=POWER_INTENSITY)
-    )
+    power_intensity = float(inherit(power_intensity, "power_intensity", md))
     # the beam set of the Bragg-vector refinement, unless overridden
-    sg_max = float(resolve(sg_max, "sg_max", md, default=SG_MAX))
-    k_max = resolve(k_max, "k_max", md)
-    fast_absorption = bool(resolve(fast_absorption, "fast_absorption", md, default=True))
+    sg_max = float(inherit(sg_max, "sg_max", md))
+    k_max = inherit(k_max, "k_max", md, default=None)
+    fast_absorption = bool(inherit(fast_absorption, "fast_absorption", md))
     tilts, tilt_w = illumination_nodes(
         energy_ev,
         md.get("precession_deg", 0.0),
@@ -4141,9 +4124,9 @@ def refine_dynamical_image(
     mask : np.ndarray | None
         Positions to refine, as in refine_dynamical; None refines all.
     sg_max, k_max : float | None
-        Beam set; inherited from the result's metadata (SG_MAX if absent).
+        Beam set; inherited from the result's metadata.
     fast_absorption : bool | None
-        First-order absorption; inherited (True if absent).
+        First-order absorption; inherited.
     update_orientations : bool, default=True
         Write the refined quaternions back into the OrientationMaps.
     progress_bar : bool, default=True
@@ -4162,13 +4145,11 @@ def refine_dynamical_image(
     cands = phase_map.candidates
     md = result.get("metadata", {})
     energy_ev = oms[0].energy_ev
-    power_intensity = float(
-        resolve(power_intensity, "power_intensity", md, default=POWER_INTENSITY)
-    )
+    power_intensity = float(inherit(power_intensity, "power_intensity", md))
     # the beam set of the Bragg-vector refinement, unless overridden
-    sg_max = float(resolve(sg_max, "sg_max", md, default=SG_MAX))
-    k_max = resolve(k_max, "k_max", md)
-    fast_absorption = bool(resolve(fast_absorption, "fast_absorption", md, default=True))
+    sg_max = float(inherit(sg_max, "sg_max", md))
+    k_max = inherit(k_max, "k_max", md, default=None)
+    fast_absorption = bool(inherit(fast_absorption, "fast_absorption", md))
     if exclude_direct_px is None:
         exclude_direct_px = 1.5 * disk_radius_px
     tilts, tilt_w = illumination_nodes(
