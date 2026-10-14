@@ -1391,6 +1391,62 @@ class AutoSerialize:
         _recurse(self, prefix="", current_depth=0)
 
 
+def _is_saved_object(directory: str) -> bool:
+    """True if `directory` is the root of a saved AutoSerialize object."""
+    try:
+        with open(os.path.join(directory, "zarr.json")) as f:
+            return "_autoserialize" in json.load(f).get("attributes", {})
+    except (OSError, ValueError):
+        return False
+
+
+def _open_saved(path: str | Path) -> tuple[zarr.Group, Any]:
+    """Open a saved object read-only, from a directory or a .zip archive.
+
+    Copies of saved files often gain one extra folder level: a folder dragged
+    into a folder of the same name, or a zip made by the operating system,
+    which wraps its contents in a folder. If `path` holds no saved object but
+    exactly one subfolder that is one, that subfolder is opened.
+
+    Returns
+    -------
+    root : zarr.Group
+        The object's root group.
+    tempdir : tempfile.TemporaryDirectory | None
+        Holds the extracted zip; keep it alive while reading.
+    """
+    path = os.fspath(path)
+    tempdir = None
+    if os.path.isdir(path):
+        base = path
+    elif os.path.isfile(path):
+        tempdir = tempfile.TemporaryDirectory()
+        with ZipFile(path, "r") as zf:
+            zf.extractall(tempdir.name)
+        base = tempdir.name
+    else:
+        raise FileNotFoundError(f"No such file or directory: {path!r}")
+
+    if not _is_saved_object(base):
+        found = [
+            os.path.join(base, d)
+            for d in sorted(os.listdir(base))
+            if not d.startswith((".", "__MACOSX")) and _is_saved_object(os.path.join(base, d))
+        ]
+        if len(found) != 1:
+            hint = (
+                f"; it contains {len(found)} saved objects: "
+                + ", ".join(os.path.basename(f) for f in found)
+                if found
+                else ""
+            )
+            raise FileNotFoundError(f"No saved quantem object at {path!r}{hint}.")
+        base = found[0]
+    # read-only: loading never writes into the user's folders
+    root = zarr.open_group(store=LocalStore(base, read_only=True), mode="r")
+    return root, tempdir
+
+
 def load(
     path: str | Path,
     skip: Union[str, type, Sequence[Union[str, type]]] = (),
@@ -1418,17 +1474,7 @@ def load(
     user_skip_types = tuple(s for s in skip if isinstance(s, type))
 
     # Load Zarr store from directory or extracted zip
-    if os.path.isdir(path):
-        store = LocalStore(path)
-    else:
-        tempdir = tempfile.TemporaryDirectory()
-        with ZipFile(path, "r") as zf:
-            zf.extractall(tempdir.name)
-        store = LocalStore(tempdir.name)
-
-    root = zarr.group(store=store)
-    if "_autoserialize" not in root.attrs:
-        raise KeyError("Missing '_autoserialize' metadata in Zarr root attrs.")
+    root, tempdir = _open_saved(path)
     meta = cast(dict[str, Any], root.attrs["_autoserialize"])
     version = int(meta.get("version", 1))
     if version != 1:
@@ -1485,14 +1531,7 @@ def print_file(
         Show full class import path (module + class name) in output.
     """
     # Open the Zarr group from dir/zip
-    if os.path.isdir(path):
-        store = LocalStore(path)
-    else:
-        tempdir = tempfile.TemporaryDirectory()
-        with ZipFile(path, "r") as zf:
-            zf.extractall(tempdir.name)
-        store = LocalStore(tempdir.name)
-    root = zarr.group(store=store)
+    root, tempdir = _open_saved(path)
 
     def _recurse(obj: Any, prefix: str = "", current_depth: int = 0, is_last: bool = True) -> None:
         if isinstance(obj, zarr.Group):

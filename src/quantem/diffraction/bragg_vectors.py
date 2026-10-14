@@ -633,6 +633,43 @@ class BraggVectors(AutoSerialize):
         bv.compute_bvm()
         return bv
 
+    def select(self, positions) -> "BraggVectors":
+        """The same BraggVectors restricted to some scan positions.
+
+        The scan grid is unchanged: the other positions keep no peaks, their
+        per-position lattice fits are NaN and their fit weights zero. The dataset, template
+        and calibration are shared with this object, and the Bragg vector map
+        is recomputed if there was one. Use it to run any later step on a
+        sub-area, e.g. a region whose crystallography is known.
+
+        Parameters
+        ----------
+        positions : list of (row, col) | np.ndarray
+            A list, tuple or array of (row, col), or an (R, C) boolean mask.
+
+        Returns
+        -------
+        BraggVectors
+            New object; ``metadata["positions_mask"]`` holds the selection.
+        """
+        from quantem.diffraction.calibration import select_positions
+
+        if self.peaks is None:
+            raise ValueError("Run detect_disks() before select().")
+        out = _copy.copy(self)
+        out.metadata = _copy.deepcopy(self.metadata)
+        out.peaks, mask = select_positions(self.peaks, positions)
+        for name in ("g1_array", "g2_array", "mask_weight", "fit_error"):
+            arr = getattr(self, name, None)
+            if isinstance(arr, np.ndarray) and arr.shape[:2] == mask.shape:
+                arr = arr.astype(float, copy=True)
+                arr[~mask] = 0.0 if name == "mask_weight" else np.nan
+                setattr(out, name, arr)
+        if self.bvm is not None:
+            out.compute_bvm(sampling=float(np.atleast_1d(self.bvm.sampling)[0]))
+        out.metadata["positions_mask"] = mask
+        return out
+
     def compute_bvm(self, sampling: float = 1.0) -> Dataset2d:
         """Accumulate all detected peaks into a Bragg vector map (intensity histogram).
 
@@ -1642,6 +1679,7 @@ class BraggVectors(AutoSerialize):
         transpose: bool | None = None,
         power_intensity: float = 0.5,
         scale_search: tuple[float, float] = (0.9, 1.1),
+        positions=None,
         plot: bool = False,
         **kwargs,
     ):
@@ -1684,6 +1722,12 @@ class BraggVectors(AutoSerialize):
             Range of the scale scan as a multiple of the guess. Ring radii of
             one lattice repeat at fixed ratios, so widen it only for a guess
             that is far out, and check the result.
+        positions : list of (row, col) | np.ndarray | None
+            Scan positions to calibrate from: a list, tuple or array of
+            (row, col), or an (R, C) boolean mask. None (default) uses every
+            position. Calibrate on a region whose crystallography is known,
+            then apply the result to the whole scan with
+            :meth:`apply_calibration`.
         plot : bool, default=False
             Show the ring comparison before and after, for the first
             reference crystal. :meth:`CrystalMap.plot_calibration` checks
@@ -1721,6 +1765,7 @@ class BraggVectors(AutoSerialize):
             transpose=transpose,
             power_intensity=power_intensity,
             scale_search=scale_search,
+            positions=positions,
             plot=plot,
             **kwargs,
         )
@@ -1738,6 +1783,7 @@ class BraggVectors(AutoSerialize):
         transpose: bool | None = None,
         precession_deg: float = 0.0,
         power_intensity: float = 0.5,
+        positions=None,
         plot: bool = False,
         **kwargs,
     ):
@@ -1777,6 +1823,12 @@ class BraggVectors(AutoSerialize):
         power_intensity : float, default=0.5
             Peaks are weighted by ``intensity ** power_intensity`` in the
             histogram.
+        positions : list of (row, col) | np.ndarray | None
+            Scan positions to calibrate from, e.g. inside one grain: a list, tuple or array of
+            (row, col), or an (R, C) boolean mask. None (default) uses every
+            position. Calibrate on a region whose crystallography is known,
+            then apply the result to the whole scan with
+            :meth:`apply_calibration`.
         plot : bool, default=False
             Show the ring comparison and the 2D histogram of the peaks under
             the simulated spots, before and after.
@@ -1804,6 +1856,7 @@ class BraggVectors(AutoSerialize):
             transpose=transpose,
             precession_deg=precession_deg,
             power_intensity=power_intensity,
+            positions=positions,
             plot=plot,
             **kwargs,
         )

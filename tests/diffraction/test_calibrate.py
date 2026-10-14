@@ -250,3 +250,70 @@ def test_measure_scan_rotation_sign(theta_deg):
     assert -90 <= angle < 90
     diff = (angle - expected + 90) % 180 - 90
     assert abs(diff) < 1.0, (angle, expected)
+
+
+@pytest.fixture(scope="module")
+def fe_two_regions(fe):
+    """Scan row 0: the reference lattice. Scan row 1: a lattice 6 % larger
+    (strained, or another phase) that a whole-scan calibration would mix in."""
+    torch.manual_seed(4)
+    rng = np.random.default_rng(4)
+    rows = []
+    for stretch in (1.0, 1.0 / 1.06):
+        quats = [qnormalize(torch.randn(4, dtype=torch.float64)) for _ in range(40)]
+        cells = []
+        for q in quats:
+            pat = fe.generate_pattern(q, energy_ev=200e3, sigma_excitation=0.02)
+            qxy = np.stack([pat["qx"].numpy(), pat["qy"].numpy()], axis=1) * stretch
+            qxy = qxy + rng.normal(0, 0.002, qxy.shape)
+            cells.append(np.column_stack([qxy / PIXEL_SIZE, pat["intensity"].numpy()]))
+        rows.append(cells)
+    return Vector.from_data(
+        rows, fields=["q_row", "q_col", "intensity"], units=["px", "px", "counts"], name="two"
+    )
+
+
+def test_calibrate_positions(fe, fe_two_regions):
+    mask = np.zeros((2, 40), dtype=bool)
+    mask[0] = True
+    listed = [(0, c) for c in range(40)]
+    cals = [
+        calibration.calibrate(fe_two_regions, fe, PIXEL_SIZE * 1.02, positions=pos)
+        for pos in (mask, listed, tuple(listed), np.array(listed))
+    ]
+    for cal in cals:
+        assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 2e-3, cal
+        assert cal.metadata["n_positions"] == 40
+    assert len({round(c.pixel_size, 10) for c in cals}) == 1
+    with pytest.raises(ValueError):
+        calibration.calibrate(fe_two_regions, fe, PIXEL_SIZE, positions=np.zeros((3, 3), bool))
+
+
+def test_calibrate_2d_positions(fe, fe_zone):
+    # calibrate_2d on the first scan row of the single-zone scan only
+    mask = np.zeros(fe_zone.shape[:2], dtype=bool)
+    mask[0] = True
+    cal = calibration.calibrate_2d(fe_zone, fe, PIXEL_SIZE * 1.02, energy_ev=200e3, positions=mask)
+    assert abs(cal.pixel_size / PIXEL_SIZE - 1) < 1e-3, cal
+    assert cal.metadata["n_positions"] == int(mask.sum())
+
+
+def test_bragg_vectors_select(fe_two_regions):
+    from quantem.core.datastructures.dataset4dstem import Dataset4dstem
+    from quantem.diffraction.bragg_vectors import BraggVectors
+
+    dset = Dataset4dstem.from_array(np.zeros((2, 40, 8, 8)))
+    bv = BraggVectors.from_dataset(dset)
+    bv.peaks = fe_two_regions
+    bv.compute_bvm()
+    sub = bv.select([(0, 3), (1, 5)])
+    counts = np.asarray(sub.peaks.row_counts()).reshape(2, 40)
+    full = np.asarray(bv.peaks.row_counts()).reshape(2, 40)
+    assert counts[0, 3] == full[0, 3] and counts[1, 5] == full[1, 5]
+    assert counts.sum() == full[0, 3] + full[1, 5]
+    assert sub.metadata["positions_mask"].sum() == 2
+    assert sub.dataset is bv.dataset and bv.peaks is fe_two_regions  # original untouched
+    assert sub.bvm is not None and sub.bvm is not bv.bvm
+    mask = np.zeros((2, 40), dtype=bool)
+    mask[:, :10] = True  # columns only
+    assert np.asarray(bv.select(mask).peaks.row_counts()).reshape(2, 40)[:, 10:].sum() == 0

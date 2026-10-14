@@ -1244,6 +1244,39 @@ def _ring_table(k: np.ndarray, w: np.ndarray, rings: np.ndarray, sigma: float, m
     return [best[j] for j in sorted(best)]
 
 
+def select_positions(peaks, positions):
+    """The peaks of some scan positions only, on the same scan grid.
+
+    Parameters
+    ----------
+    peaks : Vector
+        Ragged peaks over the scan.
+    positions : list of (row, col) | np.ndarray | None
+        A list, tuple or array of (row, col), or an (R, C) boolean mask.
+        None keeps every position.
+
+    Returns
+    -------
+    peaks : Vector
+        A copy holding only the peaks at the selected positions; the other
+        positions are empty.
+    mask : np.ndarray
+        (R, C) boolean mask of the selected positions.
+    """
+    from quantem.core.utils.clustering import filter_rows
+    from quantem.diffraction.orientation import position_mask
+
+    shape = (int(peaks.shape[0]), int(peaks.shape[1]))
+    mask = position_mask(positions, shape).numpy()
+    if positions is None:
+        return peaks, mask
+    counts = np.asarray(peaks.row_counts(), dtype=int)
+    keep = np.repeat(mask.reshape(-1), counts)
+    if not keep.any():
+        raise ValueError("no peaks at the selected positions")
+    return filter_rows(peaks, keep), mask
+
+
 def calibrate(
     peaks_px,
     crystal,
@@ -1265,6 +1298,7 @@ def calibrate(
     zone_axis=None,
     returnfig: bool = False,
     shell_step: float = 0.005,
+    positions=None,
 ):
     """Measure the reciprocal pixel size and the elliptic distortion.
 
@@ -1344,6 +1378,12 @@ def calibrate(
         Maximum range in |g|, in 1/Angstroms, grouped into one ring in the
         diagnostic plots. This affects display grouping only; calibration
         fitting uses the individual reflections.
+    positions : list of (row, col) | np.ndarray | None
+        Scan positions to calibrate from: a list, tuple or array of
+        (row, col), or an (R, C) boolean mask. None (default) uses every
+        position. Calibrate on a region whose crystallography is known, then
+        apply the result to the whole scan with
+        :meth:`DiffractionCalibration.apply`.
     returnfig : bool, default=False
         With `plot`, also return the figure and axes.
 
@@ -1379,6 +1419,7 @@ def calibrate(
         if xtl.g_vec is None:
             raise RuntimeError(f"{xtl.name}: run calculate_structure_factors() first")
     crystals = _restrict(crystals, zone_axis)
+    peaks_px, pos_mask = select_positions(peaks_px, positions)
     rings = _allowed_rings(crystals, k_max * scale_search[1] * 1.2, min_ring_intensity)
     if len(rings) < 2:
         raise ValueError("fewer than two allowed rings below k_max")
@@ -1464,6 +1505,7 @@ def calibrate(
             rings=table,
             alias_ratio=alias_ratio,
             azimuthal_coverage=coverage,
+            n_positions=int(pos_mask.sum()),
             reliable=bool(reliable),
             binning=1,
         ),
@@ -1636,6 +1678,7 @@ def calibrate_2d(
     plot: bool = False,
     figsize: tuple[float, float] = (13.0, 12.0),
     returnfig: bool = False,
+    positions=None,
 ):
     """Pixel size and elliptic distortion from the dominant orientation, in 2D.
 
@@ -1705,6 +1748,12 @@ def calibrate_2d(
         Figure size.
     returnfig : bool, default=False
         With `plot`, also return the figure and axes.
+    positions : list of (row, col) | np.ndarray | None
+        Scan positions to calibrate from: a list, tuple or array of
+        (row, col), or an (R, C) boolean mask. None (default) uses every
+        position. Calibrate on a region whose crystallography is known, then
+        apply the result to the whole scan with
+        :meth:`DiffractionCalibration.apply`.
 
     Returns
     -------
@@ -1723,6 +1772,7 @@ def calibrate_2d(
     for xtl in crystals:
         if xtl.g_vec is None:
             raise RuntimeError(f"{xtl.name}: run calculate_structure_factors() first")
+    peaks_px, pos_mask = select_positions(peaks_px, positions)
 
     flat = peaks_px.select_fields("q_row", "q_col", "intensity").numpy().astype(np.float64)
     q_px = flat[:, :2]
@@ -1810,6 +1860,7 @@ def calibrate_2d(
             orientation=[float(v) for v in q_cal],
             pixel_size_guess=float(pixel_size_guess),
             n_spots=int(len(p)),
+            n_positions=int(pos_mask.sum()),
             n_pairs=int(len(mi)),
             residual_rms=rms,
             in_plane_rotation_deg=float(np.degrees(np.arctan2(Rm[1, 0], Rm[0, 0]))),
