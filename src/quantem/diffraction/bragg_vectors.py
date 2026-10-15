@@ -31,13 +31,17 @@ from quantem.diffraction.disk_detection import (
     synthetic_probe,
     template_fourier,
 )
+from quantem.diffraction.neighbor_refinement import refine_scan_with_neighbors
 from quantem.diffraction.neural_disk_detection import (
     DEFAULT_THRESHOLD as DEFAULT_NEURAL_THRESHOLD,
 )
 from quantem.diffraction.neural_disk_detection import (
+    NEURAL_PEAK_FIELDS,
     detect_disks_neural_batch,
+    load_centre_step,
     load_spot_unet,
 )
+from quantem.diffraction.neural_weights import CENTRE_REFINER_ENTRY, FRIEDEL_PARTNER_ENTRY
 from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog_batch
 from quantem.diffraction.strain import StrainMap
 
@@ -447,8 +451,11 @@ class BraggVectors(AutoSerialize):
         sigma2: float = 2.0,
         spot_diameter: float | None = None,
         mask: np.ndarray | Literal["auto"] | None = None,
-        model_path: str | Path | None = None,
+        model: str | Path | None = None,
         model_version: str | None = None,
+        refine_centres: bool | str | Path = True,
+        friedel_partner: bool | str | Path = True,
+        neighbor_refine: bool = False,
         batch_size: int | None = None,
         progressbar: bool = True,
         save_to_gpu: bool = True,
@@ -478,7 +485,9 @@ class BraggVectors(AutoSerialize):
             itself (see :mod:`~quantem.diffraction.neural_disk_detection`); its
             weights are downloaded from em-database on first use. For ``"dog"`` and
             ``"neural"`` the reported intensity is the mean of the raw pattern over
-            a disk around each peak.
+            a disk around each peak. ``"neural"`` adds two fields per peak:
+            ``confidence`` (the network's heatmap peak, 0 to 1) and ``sigma`` (the
+            one-standard-deviation uncertainty of the centre, in pixels).
         min_abs_intensity : float, default=0.0
             Drop correlation peaks below this absolute intensity
             (``method="correlation"`` only).
@@ -529,11 +538,28 @@ class BraggVectors(AutoSerialize):
             Beam-stop mask for ``"dog"`` and ``"neural"``: peaks inside it are
             dropped and it is left out of the noise estimate. ``"auto"`` finds the
             stop in the mean diffraction pattern.
-        model_path : str or Path, optional
-            Local SpotUNet checkpoint for ``"neural"``, instead of the em-database
-            download.
+        model : str or Path, optional
+            Detector for ``"neural"``: a name from
+            :data:`~quantem.diffraction.neural_weights.DETECTOR_FILES` or a local
+            checkpoint. ``None`` uses the default detector.
         model_version : str, optional
-            Dated em-database version of the weights to pin for ``"neural"``.
+            Dated em-database version of the detector weights to pin.
+        refine_centres : bool or str or Path, default=True
+            For ``"neural"``, re-place every disk on the raw pattern at native
+            resolution with the centre network F5 (see
+            :mod:`~quantem.diffraction.centre_refinement`). A path uses a local
+            checkpoint. Skipped for spots under 5 px radius, where it cannot beat
+            the detector.
+        friedel_partner : bool or str or Path, default=True
+            For ``"neural"``, after ``refine_centres``, refine each disk again
+            together with its Friedel mirror (the network P4), which sees both
+            dynamical fills of ``g`` and ``-g``. Works on spots of 6-16 px radius
+            and leaves others alone. A path uses a local checkpoint.
+        neighbor_refine : bool, default=False
+            After detection, drop candidates the neighbouring scan positions do not
+            support (overlap merge, persistence and a soft Friedel prior; see
+            :mod:`~quantem.diffraction.neighbor_refinement`). Pairs well with a low
+            threshold. Full-scan runs only; ignored with ``positions``.
         batch_size : int, optional
             Number of patterns per batch. ``None`` (default) picks a size from the
             detector dimensions.
@@ -549,9 +575,11 @@ class BraggVectors(AutoSerialize):
         Returns
         -------
         Vector
-            Detected peaks (``[q_row, q_col, intensity]``): shape ``(scan_row,
-            scan_col)`` for the full scan, or ``(len(positions),)`` for a test run.
+            Detected peaks (``[q_row, q_col, intensity]``, plus ``confidence`` and
+            ``sigma`` for ``"neural"``): shape ``(scan_row, scan_col)`` for the full
+            scan, or ``(len(positions),)`` for a test run.
         """
+        fields = PEAK_FIELDS
         if method == "correlation":
             if self._template_ft is None:
                 raise ValueError("Run a make_template_* method before detect_disks().")
@@ -596,11 +624,33 @@ class BraggVectors(AutoSerialize):
                 background_sigma=background_sigma,
                 max_num_peaks=max_num_peaks,
             )
-            model = load_spot_unet(model_path, version=model_version, device=self.device)
+            network = load_spot_unet(model, version=model_version, device=self.device)
+            centre_refiner = load_centre_step(refine_centres, CENTRE_REFINER_ENTRY, self.device)
+            friedel_refiner = (
+                load_centre_step(friedel_partner, FRIEDEL_PARTNER_ENTRY, self.device)
+                if centre_refiner is not None
+                else None
+            )
             beamstop = self._resolve_mask(mask)
+            fields = NEURAL_PEAK_FIELDS
+            neural_kwargs = dict(detect_kwargs)
 
             def detector(dps: torch.Tensor) -> list[NDArray]:
-                return detect_disks_neural_batch(dps, model, mask=beamstop, **detect_kwargs)
+                return detect_disks_neural_batch(
+                    dps,
+                    network,
+                    mask=beamstop,
+                    centre_refiner=centre_refiner,
+                    friedel_refiner=friedel_refiner,
+                    **neural_kwargs,
+                )
+
+            # recorded in metadata only
+            detect_kwargs.update(
+                model=str(model) if model is not None else None,
+                refine_centres=centre_refiner is not None,
+                friedel_partner=friedel_refiner is not None,
+            )
 
         else:
             raise ValueError(f"method must be 'correlation', 'dog' or 'neural', got {method!r}")
@@ -622,21 +672,31 @@ class BraggVectors(AutoSerialize):
             if len(positions) == 0:
                 raise ValueError("positions must contain at least one (row, col) to test on.")
             coords = [(int(r), int(c)) for r, c in positions]
-            results = self._detect_positions(coords, detector, batch_size, progressbar=False)
-            return Vector.from_data(results, fields=PEAK_FIELDS, name="bragg_peaks_test")
+            results = self._detect_positions(
+                coords, detector, batch_size, progressbar=False, num_fields=len(fields)
+            )
+            return Vector.from_data(results, fields=fields, name="bragg_peaks_test")
 
         scan_r, scan_c = int(self.dataset.shape[0]), int(self.dataset.shape[1])
         coords = list(np.ndindex(scan_r, scan_c))
-        results = self._detect_positions(coords, detector, batch_size, progressbar=progressbar)
+        results = self._detect_positions(
+            coords, detector, batch_size, progressbar=progressbar, num_fields=len(fields)
+        )
         # Store every cell in one pass. Per-cell assignment (peaks[r, c] = arr)
         # appends to the backing buffer on every write, while from_data joins all
         # cells with a single concatenation.
         nested = [results[r * scan_c : (r + 1) * scan_c] for r in range(scan_r)]
-        peaks = Vector.from_data(nested, fields=PEAK_FIELDS, name="bragg_peaks")
+        if neighbor_refine:
+            nested = refine_scan_with_neighbors(nested, tuple(self.dataset.shape[-2:]))
+        peaks = Vector.from_data(nested, fields=fields, name="bragg_peaks")
         peaks.metadata.update(self._scan_calibration())
 
         self.peaks = peaks
-        self.metadata["detect"] = {"method": method, **detect_kwargs}
+        self.metadata["detect"] = {
+            "method": method,
+            "neighbor_refine": neighbor_refine,
+            **detect_kwargs,
+        }
         self.compute_bvm()
         return peaks
 
@@ -2113,6 +2173,7 @@ class BraggVectors(AutoSerialize):
         batch_size: int | None,
         *,
         progressbar: bool,
+        num_fields: int = len(PEAK_FIELDS),
     ) -> list[NDArray]:
         """Batched detection over a list of ``(row, col)`` scan positions.
 
@@ -2131,6 +2192,8 @@ class BraggVectors(AutoSerialize):
             dimensions.
         progressbar : bool
             If ``True``, show a tqdm progress bar over the patterns.
+        num_fields : int, default=3
+            Columns per peak, for the shape of an empty result.
 
         Returns
         -------
@@ -2169,8 +2232,7 @@ class BraggVectors(AutoSerialize):
 
             out = detector(dps)
             results.extend(
-                arr if arr.shape[0] else np.empty((0, len(PEAK_FIELDS)), dtype=float)
-                for arr in out
+                arr if arr.shape[0] else np.empty((0, num_fields), dtype=float) for arr in out
             )
             if bar is not None:
                 bar.update(len(chunk))

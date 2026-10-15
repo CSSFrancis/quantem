@@ -1,21 +1,11 @@
-"""Template-free detectors of BraggVectors.detect_disks: Difference-of-Gaussians and neural."""
-
-import os
+"""The Difference-of-Gaussians detector of BraggVectors.detect_disks, and neighbour refine."""
 
 import numpy as np
 import pytest
 import torch
 
 from quantem.core.datastructures import Dataset4dstem
-from quantem.core.ml.spot_unet import SpotUNet
-from quantem.diffraction import neural_disk_detection
 from quantem.diffraction.bragg_vectors import BraggVectors
-from quantem.diffraction.neural_disk_detection import (
-    _decode,
-    detect_disks_neural_batch,
-    load_spot_unet,
-    neural_heatmap,
-)
 from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog_batch
 
 H = W = 64
@@ -103,79 +93,25 @@ def test_default_method_is_still_template_correlation():
         bv.detect_disks(method="unknown", positions=[(0, 0)])
 
 
-def _random_checkpoint(path, nested_config=False, levels=2):
-    torch.manual_seed(0)
-    model = SpotUNet(base=4, levels=levels)
-    config = {"base": 4, "in_ch": 1, "levels": levels}
-    if nested_config:
-        torch.save({"state_dict": model.state_dict(), "config": config}, path)
-    else:
-        torch.save({"state_dict": model.state_dict(), **config}, path)
-    return model
+def test_neighbor_refine_drops_a_spot_seen_at_one_position_only():
+    dataset = _dataset()
+    data = np.array(dataset.array)
+    spurious = (52.0, 30.0)
+    data[1, 1] += 200.0 * np.exp(
+        -((_YY - spurious[0]) ** 2 + (_XX - spurious[1]) ** 2) / (2 * 1.2**2)
+    )
+    dataset = Dataset4dstem.from_array(data)
 
+    def spurious_found(neighbor_refine):
+        bv = BraggVectors.from_dataset(dataset)
+        cell = bv.detect_disks(
+            method="dog", threshold=8.0, neighbor_refine=neighbor_refine, progressbar=False
+        )[1, 1].numpy()
+        return bool((np.hypot(cell[:, 0] - spurious[0], cell[:, 1] - spurious[1]) < 1).any())
 
-@pytest.mark.parametrize("nested_config", [False, True])
-def test_load_spot_unet_reads_both_checkpoint_layouts(tmp_path, nested_config):
-    path = tmp_path / "spot_unet.pt"
-    reference = _random_checkpoint(path, nested_config=nested_config).eval()
-    model = load_spot_unet(path)
-    x = torch.randn(1, 1, 32, 32)
-    with torch.no_grad():
-        assert torch.allclose(model(x)[0], reference(x)[0])
-
-
-def test_neural_method_runs_end_to_end(tmp_path):
-    path = tmp_path / "spot_unet.pt"
-    _random_checkpoint(path)
-    bv = BraggVectors.from_dataset(_dataset())
-    # A random network carries no meaning; a zero threshold exercises every stage.
-    peaks = bv.detect_disks(method="neural", model_path=path, threshold=0.0, progressbar=False)
-    assert peaks.shape == SCAN
-    for r in range(SCAN[0]):
-        for c in range(SCAN[1]):
-            cell = peaks[r, c].numpy()
-            assert cell.shape[1] == 3 and cell.shape[0] > 0
-            assert cell[:, 0].max() < H and cell[:, 1].max() < W
-            assert np.all(np.diff(cell[:, 2]) <= 0)
-    assert bv.metadata["detect"]["method"] == "neural"
-
-
-def test_decode_moves_peaks_by_the_offset_head():
-    logits = torch.full((2, 1, 16, 16), -10.0)
-    logits[1, 0, 5, 9] = 10.0
-    offset = torch.zeros(2, 2, 16, 16)
-    offset[1, :, 5, 9] = torch.tensor([0.25, -0.4])
-    peaks, batch_index = _decode(logits, offset, threshold=0.3, window=2)
-    assert batch_index.tolist() == [1]
-    assert torch.allclose(peaks[0, :2], torch.tensor([5.25, 8.6]))
-
-
-def test_missing_emdatabase_entry_points_to_model_path(monkeypatch):
-    from emdatabase import data
-
-    monkeypatch.delattr(data, neural_disk_detection.EMDATABASE_ENTRY, raising=False)
-    with pytest.raises(RuntimeError, match="model_path"):
-        load_spot_unet()
-
-
-@pytest.mark.skipif(
-    not os.environ.get("SPOT_UNET_WEIGHTS"),
-    reason="set SPOT_UNET_WEIGHTS to a trained SpotUNet checkpoint",
-)
-def test_trained_weights_localise_planted_disks():
-    model = load_spot_unet(os.environ["SPOT_UNET_WEIGHTS"])
-    # Flat-topped disks of radius 4, the regime the network was trained on.
-    rng = np.random.default_rng(1)
-    dp = sum(200.0 / (1 + np.exp((np.hypot(_YY - r, _XX - c) - 4.0) / 0.5)) for r, c in SPOTS)
-    dp = rng.poisson(dp + 5.0).astype(np.float32)
-    cell = detect_disks_neural_batch(torch.as_tensor(dp[None]), model)[0]
-    assert _recovered(cell, tolerance=1.0) == len(SPOTS)
-
-
-def test_neural_heatmap_is_on_the_detector_grid(tmp_path):
-    path = tmp_path / "spot_unet.pt"
-    _random_checkpoint(path)
-    dps = torch.as_tensor(np.asarray(_dataset().array[0, :2]))
-    heatmap = neural_heatmap(dps, load_spot_unet(path))
-    assert heatmap.shape == (2, H, W)
-    assert float(heatmap.min()) >= 0 and float(heatmap.max()) <= 1
+    assert spurious_found(neighbor_refine=False)
+    assert not spurious_found(neighbor_refine=True)
+    bv = BraggVectors.from_dataset(dataset)
+    kept = bv.detect_disks(method="dog", threshold=8.0, neighbor_refine=True, progressbar=False)
+    assert _recovered(kept[1, 1].numpy(), tolerance=0.25) == len(SPOTS)
+    assert bv.metadata["detect"]["neighbor_refine"] is True

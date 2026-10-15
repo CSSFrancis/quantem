@@ -1,15 +1,19 @@
-"""Small U-Net that detects diffraction spots, with a heatmap head and a subpixel-offset head.
+"""Small U-Net that detects diffraction spots, with a heatmap head, a subpixel-offset head
+and, optionally, a disk-coverage head.
 
 The architecture must stay bit-faithful to the trained checkpoints, so the layer
-layout here is not to be edited. The trained weights are distributed separately
-through em-database (entry ``SpotUNetDiffraction``) under their own licence; this
-file only defines the network.
+layout and names here are not to be edited. The trained weights are distributed
+separately through em-database (see :mod:`quantem.diffraction.neural_weights`) under
+their own licence; this file only defines the network.
 
-Output heads, both at input resolution:
+Output heads, all at input resolution:
 
 - heatmap: one channel of spot-presence logits.
 - offset: two channels, the subpixel ``(d_row, d_col)`` of the spot centre from the
   pixel that carries the heatmap peak.
+- mask (``mask_head=True``): one channel of logits for how much of each pixel the
+  disk's aperture covers. Its centroid is the aperture's centre, however the
+  intensity is distributed inside the disk.
 
 The input is ``(B, C, H, W)`` with ``C`` stacked frames (``C = 1`` for one pattern).
 """
@@ -47,9 +51,11 @@ class SpotUNet(nn.Module):
         Channel count of the first encoder level; each level doubles it.
     levels : int, default=2
         Number of downsampling steps.
+    mask_head : bool, default=False
+        Add the disk-coverage head; :meth:`forward` then returns three outputs.
     """
 
-    def __init__(self, in_ch: int = 1, base: int = 16, levels: int = 2):
+    def __init__(self, in_ch: int = 1, base: int = 16, levels: int = 2, mask_head: bool = False):
         super().__init__()
         self.levels = levels
         channels = [base * (2**i) for i in range(levels + 1)]
@@ -67,8 +73,10 @@ class SpotUNet(nn.Module):
         self.head_hm = nn.Conv2d(base, 1, 1)
         self.head_off = nn.Conv2d(base, 2, 1)
         nn.init.constant_(self.head_hm.bias, -4.0)
+        self.head_mask = nn.Conv2d(base, 1, 1) if mask_head else None
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """Heatmap logits, offsets and, with a mask head, coverage logits."""
         features = []
         h = x
         for i, encoder in enumerate(self.enc):
@@ -80,4 +88,6 @@ class SpotUNet(nn.Module):
             d = decoder(torch.cat([up(d), skip], 1))
         heatmap = self.head_hm(d)
         offset = torch.tanh(self.head_off(d)) * 1.6
+        if self.head_mask is not None:
+            return heatmap, offset, self.head_mask(d)
         return heatmap, offset
