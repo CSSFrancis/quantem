@@ -1440,6 +1440,7 @@ class OrientationMap(AutoSerialize):
         score_tol: float = 0.002,
         consensus_tol: float = 0.01,
         progress_bar: bool = True,
+        rescue_duplicate_tolerance_deg: float = 0.5,
     ) -> "OrientationMap":
         """Refine matched orientations by least squares on paired peak positions.
 
@@ -1524,6 +1525,9 @@ class OrientationMap(AutoSerialize):
             Rescue passes; each after the first revisits only positions next
             to a change, since a corrected neighbour can offer a better
             candidate.
+        rescue_duplicate_tolerance_deg : float, default=0.5
+            Misorientation (degrees) below which rescue candidates are
+            treated as duplicates.
         score_tol : float, default=0.002
             Correlation margin. A refinement that moves an orientation by
             more than `rescue_threshold_deg` is undone where it lowers the
@@ -1581,6 +1585,7 @@ class OrientationMap(AutoSerialize):
             neighbor_rescue=bool(neighbor_rescue),
             rescue_threshold_deg=float(rescue_threshold_deg),
             rescue_passes=int(rescue_passes),
+            rescue_duplicate_tolerance_deg=float(rescue_duplicate_tolerance_deg),
             score_tol=float(score_tol),
             consensus_tol=float(consensus_tol),
         )
@@ -1916,10 +1921,13 @@ class OrientationMap(AutoSerialize):
                             for m in range(M):
                                 if self.corr[nr, nc, m] > 0:
                                     raw.append(self.quats[nr, nc, m])
-                    # drop repeats within 0.5 degrees, keeping the first, from
+                    # drop nearby repeats, keeping the first, from
                     # one batched misorientation matrix
                     qr = torch.stack(raw)
-                    dup = (misorientation_angle_deg(qr[:, None], qr[None], sym_m) <= 0.5).numpy()
+                    dup = (
+                        misorientation_angle_deg(qr[:, None], qr[None], sym_m)
+                        <= rescue_duplicate_tolerance_deg
+                    ).numpy()
                     keep: list[int] = []
                     for i in range(len(raw)):
                         if not any(dup[i, j] for j in keep):

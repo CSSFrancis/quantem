@@ -335,11 +335,6 @@ def _normalize_length_units(length_units: float, units: str) -> tuple[float, str
     return length_units, units
 
 
-# Minimum AnchoredSizeBar padding (fraction of the font size) when a box is
-# drawn behind the scale bar, so the box does not clip the label.
-_SCALEBAR_BOX_MIN_PAD = 0.35
-
-
 def add_scalebar_to_ax(
     ax: Axes,
     array_size: float,
@@ -386,11 +381,9 @@ def add_scalebar_to_ax(
     box : bool, default=False
         Draw a translucent box behind the bar and label so it stays
         readable on any image (e.g. white bar on a black box, or black bar
-        on a white box). The padding is raised to at least
-        ``_SCALEBAR_BOX_MIN_PAD`` (fraction of the font size) so the box clears the
-        label. ``box``, ``box_color`` and ``box_alpha`` are only available when
-        calling this function directly; ScalebarConfig and show_2d do not
-        pass them.
+        on a white box). Padding follows ``pad_px``. ``box``, ``box_color``
+        and ``box_alpha`` are only available when calling this function
+        directly; ScalebarConfig and show_2d do not pass them.
     box_color : str, default="black"
         Fill color of the box.
     box_alpha : float, default=0.5
@@ -423,7 +416,7 @@ def add_scalebar_to_ax(
         length_px,
         label,
         loc,
-        pad=pad_px if not box else max(pad_px, _SCALEBAR_BOX_MIN_PAD),
+        pad=pad_px,
         color=color,
         frameon=box,
         label_top=label_top,

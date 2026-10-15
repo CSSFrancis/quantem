@@ -2575,12 +2575,6 @@ def _fit_deformation(sq, qxy, w_exp, delta):
     return S, wz, pair
 
 
-# matched orientations of two positions closer than this (degrees) belong to
-# one grain for the neighbor rescue: above the error of kinematical matching
-# (a few tenths of a degree), below typical grain boundary angles
-_RESCUE_SAME_GRAIN_DEG = 2.0
-
-
 def _closest_symmetry_variant(q: torch.Tensor, ref: torch.Tensor, sym_quats) -> torch.Tensor:
     """The symmetry equivalent q * s of orientation q closest to ref."""
     if sym_quats is None:
@@ -2644,6 +2638,7 @@ def refine_dynamical(
     rescue_max_starts: int = 2,
     num_workers: int | None = None,
     progress_bar: bool = True,
+    rescue_same_grain_deg: float = 2.0,
 ) -> dict:
     """Dynamical refinement on the Bragg vectors: orientation, thickness,
     in-plane deformation and candidate, pixel by pixel.
@@ -2766,7 +2761,7 @@ def refine_dynamical(
     neighbor_rescue : bool, default=True
         Second pass: positions whose winning solution differs from a
         4-neighbor in the same grain (same crystal, matched orientations
-        within 2 degrees; the nearest refined position
+        within rescue_same_grain_deg; the nearest refined position
         within two steps, so a mask of every second position works too) by
         more than rescue_thickness_A in thickness or rescue_tilt_deg in
         orientation are refined again from that neighbor's solution, and
@@ -2780,6 +2775,9 @@ def refine_dynamical(
         position and a neighbor that triggers a rescue. Neighbors in one
         grain differ by the true orientation gradient, so keep it above
         that.
+    rescue_same_grain_deg : float, default=2.0
+        Maximum misorientation (degrees) between matched orientations for
+        neighbors to count as belonging to the same grain during rescue.
     rescue_max_starts : int, default=2
         Neighbor solutions tried per rescued position, lowest cost first,
         skipping neighbors whose solution repeats one already tried.
@@ -2868,6 +2866,7 @@ def refine_dynamical(
         neighbor_rescue=bool(neighbor_rescue),
         rescue_thickness_A=float(rescue_thickness_A),
         rescue_tilt_deg=float(rescue_tilt_deg),
+        rescue_same_grain_deg=float(rescue_same_grain_deg),
         rescue_max_starts=int(rescue_max_starts),
         num_workers=None if num_workers is None else int(num_workers),
     )
@@ -3281,7 +3280,7 @@ def refine_dynamical(
                         oms[i_om].quats[nr, nc, cands[fn][1]][None],
                         oms[i_om].crystal.sym_quats,
                     )[0]
-                    >= _RESCUE_SAME_GRAIN_DEG
+                    >= rescue_same_grain_deg
                 ):
                     continue
                 dt = abs(float(thick_out[nr, nc, fn]) - float(thick_out[rx, ry, f]))
