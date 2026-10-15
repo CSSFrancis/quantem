@@ -1,7 +1,7 @@
 """The neural detector of BraggVectors.detect_disks and its center steps.
 
 Most tests use randomly initialized networks, which carry no meaning but exercise
-every stage without a download. ``SPOT_UNET_WEIGHTS`` pointing at a directory of the
+every stage without a download. ``DE_SPOTNET_WEIGHTS`` pointing at a directory of the
 trained checkpoints enables the tests that need real weights.
 """
 
@@ -13,8 +13,8 @@ import pytest
 import torch
 
 from quantem.core.datastructures import Dataset4dstem
-from quantem.core.ml.spot_center_net import SpotCenterNet
-from quantem.core.ml.spot_unet import SpotUNet
+from quantem.core.ml.center_net import CenterNet
+from quantem.core.ml.spot_net import SpotNet
 from quantem.diffraction import neural_weights
 from quantem.diffraction.bragg_vectors import BraggVectors
 from quantem.diffraction.center_refinement import (
@@ -28,7 +28,7 @@ from quantem.diffraction.neural_disk_detection import (
     _decode,
     _to_pattern_coordinates,
     detect_disks_neural_batch,
-    load_spot_unet,
+    load_spot_net,
     neural_heatmap,
     positional_sigma,
 )
@@ -37,7 +37,7 @@ H = W = 64
 SCAN = (3, 4)
 _YY, _XX = np.mgrid[0:H, 0:W]
 SPOTS = [(20.3, 18.6), (20.1, 44.4), (44.7, 19.2), (43.6, 45.5), (32.2, 31.8)]
-WEIGHTS = os.environ.get("SPOT_UNET_WEIGHTS")
+WEIGHTS = os.environ.get("DE_SPOTNET_WEIGHTS")
 
 
 def _dataset():
@@ -53,7 +53,7 @@ def _dataset():
 
 def _detector_checkpoint(path, mask_head=False, nested_config=False):
     torch.manual_seed(0)
-    model = SpotUNet(base=4, levels=2, mask_head=mask_head)
+    model = SpotNet(base=4, levels=2, mask_head=mask_head)
     config = {"base": 4, "in_ch": 1, "levels": 2, "mask_head": int(mask_head)}
     if nested_config:
         torch.save({"state_dict": model.state_dict(), "config": config}, path)
@@ -64,7 +64,7 @@ def _detector_checkpoint(path, mask_head=False, nested_config=False):
 
 def _center_checkpoint(path, channels=1, **scalars):
     torch.manual_seed(1)
-    network = SpotCenterNet(base=4, levels=2, channels=channels)
+    network = CenterNet(base=4, levels=2, channels=channels)
     torch.save(
         {
             "state_dict": network.state_dict(),
@@ -80,10 +80,10 @@ def _center_checkpoint(path, channels=1, **scalars):
 
 @pytest.mark.parametrize("mask_head", [False, True])
 @pytest.mark.parametrize("nested_config", [False, True])
-def test_load_spot_unet_reads_both_checkpoint_layouts(tmp_path, mask_head, nested_config):
-    path = tmp_path / "spot_unet.pt"
+def test_load_spot_net_reads_both_checkpoint_layouts(tmp_path, mask_head, nested_config):
+    path = tmp_path / "spot_net.pt"
     reference = _detector_checkpoint(path, mask_head, nested_config).eval()
-    model = load_spot_unet(path)
+    model = load_spot_net(path)
     x = torch.randn(1, 1, 32, 32)
     with torch.no_grad():
         ours, theirs = model(x), reference(x)
@@ -94,7 +94,7 @@ def test_load_spot_unet_reads_both_checkpoint_layouts(tmp_path, mask_head, neste
 
 
 def test_neural_method_returns_confidence_and_sigma(tmp_path):
-    path = tmp_path / "spot_unet.pt"
+    path = tmp_path / "spot_net.pt"
     _detector_checkpoint(path)
     bv = BraggVectors.from_dataset(_dataset())
     peaks = bv.detect_disks(
@@ -112,7 +112,7 @@ def test_neural_method_returns_confidence_and_sigma(tmp_path):
 
 
 def test_center_steps_run_and_their_sigma_replaces_the_counting_limit(tmp_path):
-    detector, refiner, partner = (tmp_path / n for n in ("d.pt", "f5.pt", "p4.pt"))
+    detector, refiner, partner = (tmp_path / n for n in ("d.pt", "centernet.pt", "friedelnet.pt"))
     _detector_checkpoint(detector)
     _center_checkpoint(refiner, min_spot_radius=0.0)
     _center_checkpoint(partner, channels=2, min_spot_radius=0.0)
@@ -132,7 +132,7 @@ def test_default_center_steps_warn_and_continue_without_weights(tmp_path, monkey
     from emdatabase import data
 
     monkeypatch.delattr(data, neural_weights.CENTER_REFINER_ENTRY, raising=False)
-    path = tmp_path / "spot_unet.pt"
+    path = tmp_path / "spot_net.pt"
     _detector_checkpoint(path)
     bv = BraggVectors.from_dataset(_dataset())
     with pytest.warns(UserWarning, match=neural_weights.CENTER_REFINER_ENTRY):
@@ -195,7 +195,7 @@ def test_extract_crops_zero_outside_the_pattern():
 
 
 def test_refine_centers_skips_outside_its_spot_radius_range(tmp_path):
-    path = tmp_path / "p4.pt"
+    path = tmp_path / "friedelnet.pt"
     _center_checkpoint(path, channels=2, min_spot_radius=6.0, max_spot_radius=16.0)
     refiner = load_center_refiner(path)
     assert refiner.needs_partner
@@ -214,22 +214,20 @@ def test_detector_names_live_in_one_place(tmp_path):
 
 
 def test_neural_heatmap_is_on_the_detector_grid(tmp_path):
-    path = tmp_path / "spot_unet.pt"
+    path = tmp_path / "spot_net.pt"
     _detector_checkpoint(path, mask_head=True)
     dps = torch.as_tensor(np.asarray(_dataset().array[0, :2]))
-    heatmap = neural_heatmap(dps, load_spot_unet(path))
+    heatmap = neural_heatmap(dps, load_spot_net(path))
     assert heatmap.shape == (2, H, W)
     assert float(heatmap.min()) >= 0 and float(heatmap.max()) <= 1
 
 
-@pytest.mark.skipif(not WEIGHTS, reason="set SPOT_UNET_WEIGHTS to the trained checkpoints")
-@pytest.mark.parametrize(
-    "detector", ["spotunet_anyscale8_peaked_sharpened.pt", "spotunet_dynamical_mask8.pt"]
-)
+@pytest.mark.skipif(not WEIGHTS, reason="set DE_SPOTNET_WEIGHTS to the trained checkpoints")
+@pytest.mark.parametrize("detector", ["de_spotnet.pt", "de_spotnet_dynamical.pt"])
 def test_trained_weights_localize_disks_and_the_steps_tighten_them(detector):
     weights = Path(WEIGHTS)
-    model = load_spot_unet(weights / detector)
-    refiner = load_center_refiner(weights / "center_fast_f5.pt")
+    model = load_spot_net(weights / detector)
+    refiner = load_center_refiner(weights / "de_centernet.pt")
     rng = np.random.default_rng(1)
     rows, cols = np.mgrid[0:128, 0:128]
     centers = [

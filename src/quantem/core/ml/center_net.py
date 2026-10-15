@@ -1,4 +1,5 @@
-"""U-Net that segments one diffraction disk in a small window, for the center steps.
+"""DE CenterNet: a U-Net from Direct Electron that segments one diffraction disk in a small
+window, for the center steps.
 
 The network turns a normalized window around a disk into a disk-coverage map; the
 disk's center is that map's centroid (see
@@ -7,7 +8,7 @@ the center does too, and a centroid cannot leave the disk the way a regressed of
 can. A sigma head, a linear layer on the mean-pooled bottleneck, predicts the log of
 the center's standard deviation in window pixels.
 
-With ``channels=2`` the second input channel is the window at the disk's Friedel
+With ``channels=2`` (DE FriedelNet) the second input channel is the window at the disk's Friedel
 mirror point, rotated 180 degrees, so the network sees the dynamical fills of both
 ``g`` and ``-g``.
 
@@ -50,7 +51,7 @@ def _block(channels_in: int, channels_out: int, depthwise: bool) -> nn.Sequentia
     )
 
 
-class SpotCenterNet(nn.Module):
+class CenterNet(nn.Module):
     """U-Net with ``levels`` poolings returning coverage logits and the log sigma.
 
     Parameters
@@ -121,7 +122,7 @@ class SpotCenterNet(nn.Module):
 
 
 def input_channels(state_dict: dict) -> int:
-    """Input channels of a :class:`SpotCenterNet` checkpoint, from its first convolution."""
+    """Input channels of a :class:`CenterNet` checkpoint, from its first convolution."""
     for key in ("encoders.0.0.weight", "encoders.0.0.0.weight"):
         if key in state_dict:
             return int(state_dict[key].shape[1])

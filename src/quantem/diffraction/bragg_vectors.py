@@ -39,7 +39,7 @@ from quantem.diffraction.neural_disk_detection import (
     NEURAL_PEAK_FIELDS,
     detect_disks_neural_batch,
     load_center_step,
-    load_spot_unet,
+    load_spot_net,
 )
 from quantem.diffraction.neural_weights import CENTER_REFINER_ENTRY, FRIEDEL_PARTNER_ENTRY
 from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog_batch
@@ -546,13 +546,13 @@ class BraggVectors(AutoSerialize):
             Dated em-database version of the detector weights to pin.
         refine_centers : bool or str or Path, default=True
             For ``"neural"``, re-place every disk on the raw pattern at native
-            resolution with the center network F5 (see
+            resolution with DE CenterNet (see
             :mod:`~quantem.diffraction.center_refinement`). A path uses a local
             checkpoint. Skipped for spots under 5 px radius, where it cannot beat
             the detector.
         friedel_partner : bool or str or Path, default=True
             For ``"neural"``, after ``refine_centers``, refine each disk again
-            together with its Friedel mirror (the network P4), which sees both
+            together with its Friedel mirror (DE FriedelNet), which sees both
             dynamical fills of ``g`` and ``-g``. Works on spots of 6-16 px radius
             and leaves others alone. A path uses a local checkpoint.
         neighbor_refine : bool, default=False
@@ -624,7 +624,7 @@ class BraggVectors(AutoSerialize):
                 background_sigma=background_sigma,
                 max_num_peaks=max_num_peaks,
             )
-            network = load_spot_unet(model, version=model_version, device=self.device)
+            network = load_spot_net(model, version=model_version, device=self.device)
             center_refiner = load_center_step(refine_centers, CENTER_REFINER_ENTRY, self.device)
             friedel_refiner = (
                 load_center_step(friedel_partner, FRIEDEL_PARTNER_ENTRY, self.device)

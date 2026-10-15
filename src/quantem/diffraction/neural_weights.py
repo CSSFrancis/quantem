@@ -5,33 +5,33 @@ em-database and carry their own license (non-commercial), which is printed the f
 time any of them is fetched. Every name that ties quantem to a published file lives
 in this module, so a renamed entry or a new detector is a one-line change here.
 
-Each em-database entry serves one checkpoint, so every detector that can be
-downloaded has an entry of its own.
+Each em-database entry serves one checkpoint, so every detector has an entry of
+its own.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-#: em-database entries of the center networks: the refine step (F5) and the
-#: Friedel-partner step (P4).
-CENTER_REFINER_ENTRY = "SpotUNetCenterRefiner"
-FRIEDEL_PARTNER_ENTRY = "SpotUNetFriedelPartner"
+#: em-database entries of the center networks: DE CenterNet, the refine step, and
+#: DE FriedelNet, the Friedel-partner step.
+CENTER_REFINER_ENTRY = "DE_CenterNet"
+FRIEDEL_PARTNER_ENTRY = "DE_FriedelNet"
 
-#: The em-database entry of each detector, by name; ``None`` for one that is not
-#: published and can only be used from a local checkpoint. ``anyscale8`` is trained
-#: across disk sizes, so it tolerates residual error in the disk-size estimate;
-#: ``dynamical-mask8`` adds a disk-coverage head that centers each disk on its aperture
-#: rather than on where the intensity sits inside it, which matters for dynamically
-#: filled disks; ``production`` is slightly better on disks of the trained size and
-#: weaker off it.
+#: The em-database entry of each DE SpotNet detector, by ``model=`` name. ``spotnet``
+#: is trained across disk sizes, so it tolerates residual error in the disk-size
+#: estimate; ``dynamical`` adds a disk-coverage head that centers each disk on its
+#: aperture rather than on where the intensity sits inside it, which matters for
+#: dynamically filled disks; ``production`` is slightly better on disks of the trained
+#: size and weaker off it; ``base16`` is the earlier edge-trained detector, kept as a
+#: fallback.
 DETECTOR_ENTRIES = {
-    "anyscale8": "SpotUNetDiffraction",
-    "dynamical-mask8": "SpotUNetDynamical",
-    "production": "SpotUNetProduction",
-    "base16": None,
+    "spotnet": "DE_SpotNet",
+    "dynamical": "DE_SpotNet_Dynamical",
+    "production": "DE_SpotNet_Production",
+    "base16": "DE_SpotNet_Base16",
 }
-DEFAULT_DETECTOR = "anyscale8"
+DEFAULT_DETECTOR = "spotnet"
 
 _LICENSE_SHOWN = False
 
@@ -55,12 +55,7 @@ def detector_path(model: str | Path | None, version: str | None = None) -> Path:
     if model is None:
         model = DEFAULT_DETECTOR
     if str(model) in DETECTOR_ENTRIES:
-        entry_name = DETECTOR_ENTRIES[str(model)]
-        if entry_name is None:
-            raise ValueError(
-                f"Detector {model!r} is not published on em-database; pass its checkpoint path."
-            )
-        return entry_path(entry_name, version)
+        return entry_path(DETECTOR_ENTRIES[str(model)], version)
     path = Path(model)
     if not path.is_file():
         raise ValueError(
@@ -102,7 +97,7 @@ def entry_path(entry_name: str, version: str | None = None) -> Path:
     entry = entry_class()
     if not _LICENSE_SHOWN:
         print(
-            f"SpotUNet weights from em-database are licensed {entry.metadata.license}: "
+            f"Direct Electron network weights from em-database are licensed {entry.metadata.license}: "
             "free for research and other non-commercial use, including in-house use at "
             "a company; they may not be redistributed in, or used to provide, a product "
             "or service that is sold. See the em-database entry for the full terms."

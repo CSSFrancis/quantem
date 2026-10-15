@@ -1,4 +1,4 @@
-"""Neural diffraction spot detection with :class:`~quantem.core.ml.spot_unet.SpotUNet`.
+"""Neural diffraction spot detection with DE SpotNet (:class:`~quantem.core.ml.spot_net.SpotNet`).
 
 The pipeline needs no template and almost no parameters:
 
@@ -39,7 +39,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from quantem.core.ml.spot_unet import SpotUNet
+from quantem.core.ml.spot_net import SpotNet
 from quantem.diffraction import neural_weights
 from quantem.diffraction.center_refinement import (
     CenterRefiner,
@@ -62,17 +62,17 @@ INTENSITY_RADIUS = 5.0
 #: Columns of a neural detection.
 NEURAL_PEAK_FIELDS = ("q_row", "q_col", "intensity", "confidence", "sigma")
 
-_MODELS: dict[tuple[str, str], SpotUNet] = {}
+_MODELS: dict[tuple[str, str], SpotNet] = {}
 _REFINERS: dict[tuple[str, str], CenterRefiner] = {}
 
 
-def load_spot_unet(
+def load_spot_net(
     model: str | Path | None = None,
     *,
     version: str | None = None,
     device: str | torch.device = "cpu",
-) -> SpotUNet:
-    """Load a trained SpotUNet detector, downloading the weights if needed.
+) -> SpotNet:
+    """Load a trained DE SpotNet detector, downloading the weights if needed.
 
     Parameters
     ----------
@@ -86,7 +86,7 @@ def load_spot_unet(
 
     Returns
     -------
-    SpotUNet
+    SpotNet
         The model in evaluation mode, with ``mad_floor`` (floor on the normalization
         scale, or ``None``) and ``default_threshold`` read from the checkpoint. Loaded
         models are cached per path and device.
@@ -97,7 +97,7 @@ def load_spot_unet(
         # weights_only: a downloaded checkpoint must never unpickle arbitrary objects.
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
         architecture = {**checkpoint, **checkpoint.get("config", {})}
-        network = SpotUNet(
+        network = SpotNet(
             in_ch=int(architecture.get("in_ch", 1)),
             base=int(architecture["base"]),
             levels=int(architecture.get("levels", 2)),
@@ -503,7 +503,7 @@ def counts_radius(pattern: np.ndarray, spot_radius: float | None) -> float:
 @torch.no_grad()
 def detect_disks_neural_batch(
     dps: torch.Tensor,
-    model: SpotUNet,
+    model: SpotNet,
     *,
     threshold: float = DEFAULT_THRESHOLD,
     min_spacing: int = 4,
@@ -515,14 +515,14 @@ def detect_disks_neural_batch(
     friedel_refiner: CenterRefiner | None = None,
     forward_batch_size: int = 64,
 ) -> list[np.ndarray]:
-    """Detect spots across a stack of patterns with a trained SpotUNet.
+    """Detect spots across a stack of patterns with a trained DE SpotNet.
 
     Parameters
     ----------
     dps : torch.Tensor
         ``(B, H, W)`` diffraction patterns.
-    model : SpotUNet
-        Trained detector, e.g. from :func:`load_spot_unet`.
+    model : SpotNet
+        Trained detector, e.g. from :func:`load_spot_net`.
     threshold : float, default=0.3
         Minimum heatmap confidence.
     min_spacing : int, default=4
@@ -538,9 +538,9 @@ def detect_disks_neural_batch(
     mask : np.ndarray, optional
         ``(H, W)`` boolean beam-stop mask; peaks inside it are dropped.
     center_refiner : CenterRefiner, optional
-        The refine step (F5), run on every detection.
+        The refine step (DE CenterNet), run on every detection.
     friedel_refiner : CenterRefiner, optional
-        The Friedel-partner step (P4), run after the refine step.
+        The Friedel-partner step (DE FriedelNet), run after the refine step.
     forward_batch_size : int, default=64
         Patterns per forward pass; bounds the activation memory, not the result.
 
@@ -616,7 +616,7 @@ def detect_disks_neural_batch(
 @torch.no_grad()
 def neural_heatmap(
     dps: torch.Tensor,
-    model: SpotUNet,
+    model: SpotNet,
     *,
     spot_diameter: float | None = None,
     background_sigma: float | None = None,
@@ -630,7 +630,7 @@ def neural_heatmap(
     ----------
     dps : torch.Tensor
         ``(B, H, W)`` diffraction patterns.
-    model : SpotUNet
+    model : SpotNet
         Trained model.
     spot_diameter : float, optional
         Disk diameter in pixels, overriding the autocorrelation estimate.
@@ -661,7 +661,7 @@ def neural_heatmap(
 @torch.no_grad()
 def calibrate_neural(
     dps: torch.Tensor,
-    model: SpotUNet,
+    model: SpotNet,
     *,
     spot_diameter: float | None = None,
     tune_threshold: bool = True,
@@ -677,7 +677,7 @@ def calibrate_neural(
     ----------
     dps : torch.Tensor
         ``(B, H, W)`` representative patterns spread across the scan.
-    model : SpotUNet
+    model : SpotNet
         Trained model.
     spot_diameter : float, optional
         Disk diameter in pixels, overriding the autocorrelation estimate.

@@ -3,9 +3,9 @@
 The neural detector finds disks on a rescaled, locally normalized working image, so
 its centers are only as good as that image. Two steps look again at the raw counts:
 
-1. **Refine** (the center network F5): each disk's own window, from the detector's
+1. **Refine** (DE CenterNet): each disk's own window, from the detector's
    center.
-2. **Friedel partner** (P4), on top of the refined centers: each disk's window
+2. **Friedel partner** (DE FriedelNet), on top of the refined centers: each disk's window
    together with the window at its Friedel mirror point ``2 x beam - p``, which shows
    the other dynamical fill of the same reflection. It works on spots of 6-16 px
    radius and leaves others where the refine step put them.
@@ -13,7 +13,7 @@ its centers are only as good as that image. Two steps look again at the raw coun
 Each step resamples a window around every disk so the disk spans ``crop_radius``
 window pixels, normalizes it (subtract the mean of an outer annulus, divide by the
 disk's contrast over it), segments the disk with a
-:class:`~quantem.core.ml.spot_center_net.SpotCenterNet` and takes the coverage
+:class:`~quantem.core.ml.center_net.CenterNet` and takes the coverage
 centroid. Disks the first pass moved by more than ``recrop_over x R`` are re-cut at
 the new center and segmented again.
 
@@ -35,7 +35,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from quantem.core.ml.spot_center_net import SpotCenterNet, input_channels
+from quantem.core.ml.center_net import CenterNet, input_channels
 
 #: The largest move a step accepts, as a fraction of the spot radius.
 MAX_SHIFT_FRACTION = 0.5
@@ -98,11 +98,11 @@ def coverage_centroid(
 
 
 class CenterRefiner:
-    """A trained :class:`SpotCenterNet` and the window contract it was trained with.
+    """A trained :class:`CenterNet` and the window contract it was trained with.
 
     Parameters
     ----------
-    network : SpotCenterNet
+    network : CenterNet
         The network, in evaluation mode.
     crop_radius : float, default=10.0
         Window pixels a spot radius is resampled to.
@@ -124,7 +124,7 @@ class CenterRefiner:
 
     def __init__(
         self,
-        network: SpotCenterNet,
+        network: CenterNet,
         *,
         crop_radius: float = 10.0,
         crop_half: int = 16,
@@ -307,7 +307,7 @@ def load_center_refiner(path: str | Path, device: str | torch.device = "cpu") ->
     """
     # weights_only: a downloaded checkpoint must never unpickle arbitrary objects.
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    network = SpotCenterNet(
+    network = CenterNet(
         int(checkpoint.get("base", 8)),
         int(checkpoint.get("levels", 2)),
         bool(checkpoint.get("depthwise", 0)),

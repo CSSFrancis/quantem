@@ -1,5 +1,5 @@
-"""Small U-Net that detects diffraction spots, with a heatmap head, a subpixel-offset head
-and, optionally, a disk-coverage head.
+"""DE SpotNet: a small U-Net from Direct Electron that detects diffraction spots, with a
+heatmap head, a subpixel-offset head and, optionally, a disk-coverage head.
 
 The architecture must stay bit-faithful to the trained checkpoints, so the layer
 layout and names here are not to be edited. The trained weights are distributed
@@ -16,6 +16,10 @@ Output heads, all at input resolution:
   intensity is distributed inside the disk.
 
 The input is ``(B, C, H, W)`` with ``C`` stacked frames (``C = 1`` for one pattern).
+
+Provenance: this is the network SpyDE ships as ``SpotUNet``
+(``spyde/models/unet.py`` in github.com/directelectron/spyde); the checkpoints are
+the same files under their Direct Electron names.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
     )
 
 
-class SpotUNet(nn.Module):
+class SpotNet(nn.Module):
     """Compact U-Net with a deliberately small receptive field.
 
     ``levels`` is the number of downsampling steps. The receptive field must cover
