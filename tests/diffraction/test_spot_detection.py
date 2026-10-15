@@ -1,4 +1,4 @@
-"""The Difference-of-Gaussians detector of BraggVectors.detect_disks, and neighbour refine."""
+"""The Difference-of-Gaussians detector of BraggVectors.detect_disks, and neighbor refine."""
 
 import numpy as np
 import pytest
@@ -11,7 +11,7 @@ from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog
 H = W = 64
 SCAN = (3, 4)
 _YY, _XX = np.mgrid[0:H, 0:W]
-# Subpixel spot centres shared by every pattern, away from the beam stop corner.
+# Subpixel spot centers shared by every pattern, away from the beam stop corner.
 SPOTS = [(20.3, 18.6), (20.1, 44.4), (44.7, 19.2), (43.6, 45.5), (32.2, 31.8)]
 
 

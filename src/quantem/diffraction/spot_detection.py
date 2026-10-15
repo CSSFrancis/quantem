@@ -17,7 +17,7 @@ estimate, and peaks inside it are dropped.
 All detectors return per-pattern ``(M, 3)`` arrays of ``[q_row, q_col, intensity]``
 in detector pixels, sorted by descending intensity, where the intensity is the mean
 of the raw pattern over a small disk around each peak. A single-pixel sample is
-dominated by shot noise and by where the subpixel centre landed, which shows up as
+dominated by shot noise and by where the subpixel center landed, which shows up as
 banding in an intensity-weighted virtual image.
 """
 

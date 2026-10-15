@@ -4,15 +4,15 @@ and, optionally, a disk-coverage head.
 The architecture must stay bit-faithful to the trained checkpoints, so the layer
 layout and names here are not to be edited. The trained weights are distributed
 separately through em-database (see :mod:`quantem.diffraction.neural_weights`) under
-their own licence; this file only defines the network.
+their own license; this file only defines the network.
 
 Output heads, all at input resolution:
 
 - heatmap: one channel of spot-presence logits.
-- offset: two channels, the subpixel ``(d_row, d_col)`` of the spot centre from the
+- offset: two channels, the subpixel ``(d_row, d_col)`` of the spot center from the
   pixel that carries the heatmap peak.
 - mask (``mask_head=True``): one channel of logits for how much of each pixel the
-  disk's aperture covers. Its centroid is the aperture's centre, however the
+  disk's aperture covers. Its centroid is the aperture's center, however the
   intensity is distributed inside the disk.
 
 The input is ``(B, C, H, W)`` with ``C`` stacked frames (``C = 1`` for one pattern).

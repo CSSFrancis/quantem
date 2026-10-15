@@ -1,4 +1,4 @@
-"""Reject false detections using the neighbouring scan positions.
+"""Reject false detections using the neighboring scan positions.
 
 Run after detection at a permissive threshold: the detector over-detects for recall,
 and this step encodes physical constraints to drop the false positives while keeping
@@ -64,7 +64,7 @@ def merge_overlaps(peaks: np.ndarray, min_separation: float = 3.0) -> np.ndarray
 def persistence_score(
     peaks: np.ndarray, neighbor_peaks: list[np.ndarray], tolerance: float = 3.0
 ) -> np.ndarray:
-    """Fraction of the neighbouring positions with a candidate within ``tolerance``."""
+    """Fraction of the neighboring positions with a candidate within ``tolerance``."""
     peaks = np.asarray(peaks, np.float64)
     if len(peaks) == 0 or not neighbor_peaks:
         return np.zeros(len(peaks))
@@ -90,7 +90,7 @@ def friedel_score(
 ) -> np.ndarray:
     """1 where a candidate has a partner near its mirror about ``center``, else 0.
 
-    Candidates within ``min_radius`` of the centre always score 1.
+    Candidates within ``min_radius`` of the center always score 1.
     """
     peaks = np.asarray(peaks, np.float64)
     center = np.asarray(center, np.float64)[:2]
@@ -127,7 +127,7 @@ def refine_with_neighbors(
 
     The score is ``confidence_weight * brightness + persistence_weight * persistence +
     friedel_weight * friedel``, with brightness the candidate's score over the
-    position's brightest. The Friedel centre is the brightest candidate within a fifth
+    position's brightest. The Friedel center is the brightest candidate within a fifth
     of the pattern of its middle (the direct beam).
 
     Parameters
@@ -136,7 +136,7 @@ def refine_with_neighbors(
         ``(N, >=3)`` candidates of this position; column 2 is their score or intensity.
         Further columns are carried over from the nearest original candidate.
     neighbor_peaks : list of np.ndarray
-        The candidates of the neighbouring positions.
+        The candidates of the neighboring positions.
     frame_shape : tuple of int
         ``(H, W)`` of the patterns.
 
@@ -176,7 +176,7 @@ def refine_scan_with_neighbors(
 ) -> list[list[np.ndarray]]:
     """:func:`refine_with_neighbors` at every position of a scan.
 
-    Uses the four adjacent positions. A position with fewer than two neighbours, or
+    Uses the four adjacent positions. A position with fewer than two neighbors, or
     with no candidates, is left as it is rather than risk dropping real disks for lack
     of evidence.
 

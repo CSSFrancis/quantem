@@ -1,11 +1,11 @@
-"""U-Net that segments one diffraction disk in a small window, for the centre steps.
+"""U-Net that segments one diffraction disk in a small window, for the center steps.
 
-The network turns a normalised window around a disk into a disk-coverage map; the
-disk's centre is that map's centroid (see
-:mod:`quantem.diffraction.centre_refinement`). A convolution moves with the disk, so
-the centre does too, and a centroid cannot leave the disk the way a regressed offset
+The network turns a normalized window around a disk into a disk-coverage map; the
+disk's center is that map's centroid (see
+:mod:`quantem.diffraction.center_refinement`). A convolution moves with the disk, so
+the center does too, and a centroid cannot leave the disk the way a regressed offset
 can. A sigma head, a linear layer on the mean-pooled bottleneck, predicts the log of
-the centre's standard deviation in window pixels.
+the center's standard deviation in window pixels.
 
 With ``channels=2`` the second input channel is the window at the disk's Friedel
 mirror point, rotated 180 degrees, so the network sees the dynamical fills of both
@@ -50,7 +50,7 @@ def _block(channels_in: int, channels_out: int, depthwise: bool) -> nn.Sequentia
     )
 
 
-class SpotCentreNet(nn.Module):
+class SpotCenterNet(nn.Module):
     """U-Net with ``levels`` poolings returning coverage logits and the log sigma.
 
     Parameters
@@ -62,7 +62,7 @@ class SpotCentreNet(nn.Module):
     depthwise : bool, default=False
         Use depthwise-separable convolutions.
     sigma_head : bool, default=True
-        Predict the log of the centre's standard deviation.
+        Predict the log of the center's standard deviation.
     channels : int, default=1
         Input channels: 1 for the disk's window, 2 to add its Friedel-mirror window.
     """
@@ -121,8 +121,8 @@ class SpotCentreNet(nn.Module):
 
 
 def input_channels(state_dict: dict) -> int:
-    """Input channels of a :class:`SpotCentreNet` checkpoint, from its first convolution."""
+    """Input channels of a :class:`SpotCenterNet` checkpoint, from its first convolution."""
     for key in ("encoders.0.0.weight", "encoders.0.0.0.weight"):
         if key in state_dict:
             return int(state_dict[key].shape[1])
-    raise ValueError("no first convolution in this centre network's state dict")
+    raise ValueError("no first convolution in this center network's state dict")

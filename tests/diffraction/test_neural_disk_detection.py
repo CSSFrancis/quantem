@@ -1,6 +1,6 @@
-"""The neural detector of BraggVectors.detect_disks and its centre steps.
+"""The neural detector of BraggVectors.detect_disks and its center steps.
 
-Most tests use randomly initialised networks, which carry no meaning but exercise
+Most tests use randomly initialized networks, which carry no meaning but exercise
 every stage without a download. ``SPOT_UNET_WEIGHTS`` pointing at a directory of the
 trained checkpoints enables the tests that need real weights.
 """
@@ -13,15 +13,15 @@ import pytest
 import torch
 
 from quantem.core.datastructures import Dataset4dstem
-from quantem.core.ml.spot_centre_net import SpotCentreNet
+from quantem.core.ml.spot_center_net import SpotCenterNet
 from quantem.core.ml.spot_unet import SpotUNet
 from quantem.diffraction import neural_weights
 from quantem.diffraction.bragg_vectors import BraggVectors
-from quantem.diffraction.centre_refinement import (
+from quantem.diffraction.center_refinement import (
     extract_crops,
     frame_beams,
-    load_centre_refiner,
-    refine_centres,
+    load_center_refiner,
+    refine_centers,
 )
 from quantem.diffraction.neural_disk_detection import (
     NEURAL_PEAK_FIELDS,
@@ -62,9 +62,9 @@ def _detector_checkpoint(path, mask_head=False, nested_config=False):
     return model
 
 
-def _centre_checkpoint(path, channels=1, **scalars):
+def _center_checkpoint(path, channels=1, **scalars):
     torch.manual_seed(1)
-    network = SpotCentreNet(base=4, levels=2, channels=channels)
+    network = SpotCenterNet(base=4, levels=2, channels=channels)
     torch.save(
         {
             "state_dict": network.state_dict(),
@@ -98,7 +98,7 @@ def test_neural_method_returns_confidence_and_sigma(tmp_path):
     _detector_checkpoint(path)
     bv = BraggVectors.from_dataset(_dataset())
     peaks = bv.detect_disks(
-        method="neural", model=path, threshold=0.0, refine_centres=False, progressbar=False
+        method="neural", model=path, threshold=0.0, refine_centers=False, progressbar=False
     )
     assert peaks.shape == SCAN
     assert tuple(peaks.fields) == NEURAL_PEAK_FIELDS
@@ -107,19 +107,19 @@ def test_neural_method_returns_confidence_and_sigma(tmp_path):
     assert cell[:, 0].max() < H and cell[:, 1].max() < W
     assert np.all(np.diff(cell[:, 2]) <= 0)
     assert np.all((cell[:, 3] >= 0) & (cell[:, 3] <= 1))
-    assert bv.metadata["detect"]["refine_centres"] is False
+    assert bv.metadata["detect"]["refine_centers"] is False
     assert bv.bvm is not None  # the extra fields do not disturb the Bragg vector map
 
 
-def test_centre_steps_run_and_their_sigma_replaces_the_counting_limit(tmp_path):
+def test_center_steps_run_and_their_sigma_replaces_the_counting_limit(tmp_path):
     detector, refiner, partner = (tmp_path / n for n in ("d.pt", "f5.pt", "p4.pt"))
     _detector_checkpoint(detector)
-    _centre_checkpoint(refiner, min_spot_radius=0.0)
-    _centre_checkpoint(partner, channels=2, min_spot_radius=0.0)
+    _center_checkpoint(refiner, min_spot_radius=0.0)
+    _center_checkpoint(partner, channels=2, min_spot_radius=0.0)
     bv = BraggVectors.from_dataset(_dataset())
     common = dict(method="neural", model=detector, threshold=0.0, positions=[(0, 0), (2, 3)])
-    plain = bv.detect_disks(refine_centres=False, **common)
-    stepped = bv.detect_disks(refine_centres=refiner, friedel_partner=partner, **common)
+    plain = bv.detect_disks(refine_centers=False, **common)
+    stepped = bv.detect_disks(refine_centers=refiner, friedel_partner=partner, **common)
     assert plain[0].numpy().shape == stepped[0].numpy().shape
     # Once a step runs, sigma is its own estimate (NaN where it declined a disk)
     # rather than the counting-noise limit.
@@ -128,14 +128,14 @@ def test_centre_steps_run_and_their_sigma_replaces_the_counting_limit(tmp_path):
     assert not np.allclose(plain_sigma, stepped_sigma, equal_nan=True)
 
 
-def test_default_centre_steps_warn_and_continue_without_weights(tmp_path, monkeypatch):
+def test_default_center_steps_warn_and_continue_without_weights(tmp_path, monkeypatch):
     from emdatabase import data
 
-    monkeypatch.delattr(data, neural_weights.CENTRE_REFINER_ENTRY, raising=False)
+    monkeypatch.delattr(data, neural_weights.CENTER_REFINER_ENTRY, raising=False)
     path = tmp_path / "spot_unet.pt"
     _detector_checkpoint(path)
     bv = BraggVectors.from_dataset(_dataset())
-    with pytest.warns(UserWarning, match=neural_weights.CENTRE_REFINER_ENTRY):
+    with pytest.warns(UserWarning, match=neural_weights.CENTER_REFINER_ENTRY):
         found = bv.detect_disks(method="neural", model=path, threshold=0.0, positions=[(0, 0)])
     assert found[0].numpy().shape[1] == 5
 
@@ -151,7 +151,7 @@ def test_decode_moves_peaks_by_the_offset_head():
     assert 0.99 < float(peaks[0, 2]) <= 1.0
 
 
-def test_decode_centres_on_the_mask_when_it_is_a_disk():
+def test_decode_centers_on_the_mask_when_it_is_a_disk():
     logits = torch.full((1, 1, 32, 32), -10.0)
     logits[0, 0, 15, 15] = 10.0
     offset = torch.zeros(1, 2, 32, 32)
@@ -176,13 +176,13 @@ def test_positional_sigma_shrinks_with_counts():
     assert sigma[1] < sigma[0] and np.isnan(sigma[2])
 
 
-def test_frame_beams_finds_the_centre_of_symmetry():
+def test_frame_beams_finds_the_center_of_symmetry():
     rng = np.random.default_rng(2)
     beam = np.array([30.4, 33.1])
     g = rng.uniform(-20, 20, (6, 2))
     points = np.concatenate([beam[None], beam + g, beam - g])
     assert np.allclose(frame_beams([points], (64, 64), 3.0)[0], beam, atol=1e-6)
-    # too few disks: the pattern centre
+    # too few disks: the pattern center
     assert np.allclose(frame_beams([points[:2]], (64, 64), 3.0)[0], [32, 32])
 
 
@@ -194,18 +194,18 @@ def test_extract_crops_zero_outside_the_pattern():
     assert np.allclose(local, [[2.2, 2.4]])
 
 
-def test_refine_centres_skips_outside_its_spot_radius_range(tmp_path):
+def test_refine_centers_skips_outside_its_spot_radius_range(tmp_path):
     path = tmp_path / "p4.pt"
-    _centre_checkpoint(path, channels=2, min_spot_radius=6.0, max_spot_radius=16.0)
-    refiner = load_centre_refiner(path)
+    _center_checkpoint(path, channels=2, min_spot_radius=6.0, max_spot_radius=16.0)
+    refiner = load_center_refiner(path)
     assert refiner.needs_partner
     positions = [np.array([[10.0, 10.0]])]
-    refined, sigmas = refine_centres([np.zeros((32, 32))], positions, 3.0, refiner)
+    refined, sigmas = refine_centers([np.zeros((32, 32))], positions, 3.0, refiner)
     assert sigmas is None and np.array_equal(refined[0], positions[0])
 
 
 def test_detector_names_live_in_one_place(tmp_path):
-    assert neural_weights.DEFAULT_DETECTOR in neural_weights.DETECTOR_FILES
+    assert neural_weights.DEFAULT_DETECTOR in neural_weights.DETECTOR_ENTRIES
     with pytest.raises(ValueError, match="model must be"):
         neural_weights.detector_path("not-a-detector")
     path = tmp_path / "local.pt"
@@ -226,31 +226,31 @@ def test_neural_heatmap_is_on_the_detector_grid(tmp_path):
 @pytest.mark.parametrize(
     "detector", ["spotunet_anyscale8_peaked_sharpened.pt", "spotunet_dynamical_mask8.pt"]
 )
-def test_trained_weights_localise_disks_and_the_steps_tighten_them(detector):
+def test_trained_weights_localize_disks_and_the_steps_tighten_them(detector):
     weights = Path(WEIGHTS)
     model = load_spot_unet(weights / detector)
-    refiner = load_centre_refiner(weights / "centre_fast_f5.pt")
+    refiner = load_center_refiner(weights / "center_fast_f5.pt")
     rng = np.random.default_rng(1)
     rows, cols = np.mgrid[0:128, 0:128]
-    centres = [
+    centers = [
         (64 + 24 * i + 0.3 * j, 64 + 24 * j - 0.2 * i)
         for i in (-2, -1, 0, 1, 2)
         for j in (-2, -1, 0, 1, 2)
     ]
     pattern = sum(
-        150.0 / (1 + np.exp((np.hypot(rows - r, cols - c) - 7.0) / 0.5)) for r, c in centres
+        150.0 / (1 + np.exp((np.hypot(rows - r, cols - c) - 7.0) / 0.5)) for r, c in centers
     )
     pattern = torch.as_tensor(rng.poisson(pattern + 4.0).astype(np.float32)[None])
 
     def error(found):
         distance = np.hypot(
-            found[:, None, 0] - np.array(centres)[None, :, 0],
-            found[:, None, 1] - np.array(centres)[None, :, 1],
+            found[:, None, 0] - np.array(centers)[None, :, 0],
+            found[:, None, 1] - np.array(centers)[None, :, 1],
         )
         assert (distance.min(0) < 1.0).all()
         return float(np.median(distance.min(0)))
 
     plain = detect_disks_neural_batch(pattern, model)[0]
-    refined = detect_disks_neural_batch(pattern, model, centre_refiner=refiner)[0]
+    refined = detect_disks_neural_batch(pattern, model, center_refiner=refiner)[0]
     assert error(refined) <= error(plain) + 0.02
     assert np.isfinite(refined[:, 4]).mean() > 0.5

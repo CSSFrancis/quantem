@@ -5,19 +5,19 @@ The pipeline needs no template and almost no parameters:
 1. Estimate the disk diameter from the autocorrelation of one pattern (a disk
    correlated with itself gives a central peak about one diameter wide) and resample
    every pattern so its disks land near the size the network was trained on.
-2. Normalise: ``log1p``, subtract a wide Gaussian background, then standardise by
+2. Normalize: ``log1p``, subtract a wide Gaussian background, then standardize by
    the median and MAD.
 3. Run the network and keep heatmap maxima above a confidence threshold, moved by the
    predicted subpixel offset. A network with a disk-coverage head then moves each
-   centre to the centroid of its predicted aperture.
+   center to the centroid of its predicted aperture.
 4. Map positions back to detector pixels and, by default, re-place each disk on the
-   raw pattern at native resolution with the centre networks
-   (:mod:`~quantem.diffraction.centre_refinement`).
+   raw pattern at native resolution with the center networks
+   (:mod:`~quantem.diffraction.center_refinement`).
 
 Every detection is ``[q_row, q_col, intensity, confidence, sigma]``: the mean of the
 raw pattern over a disk around it, the heatmap peak (how sure the network is there
-is a disk), and the one-standard-deviation uncertainty of its centre in pixels. Sigma
-is the centre networks' own estimate when they ran, and otherwise the
+is a disk), and the one-standard-deviation uncertainty of its center in pixels. Sigma
+is the center networks' own estimate when they ran, and otherwise the
 counting-noise limit for a spot as wide as the network's response
 (:func:`positional_sigma`). The two are never mixed in one pattern: the
 counting-noise limit is tens of times smaller, so a disk the networks declined would
@@ -41,11 +41,11 @@ import torch.nn.functional as F
 
 from quantem.core.ml.spot_unet import SpotUNet
 from quantem.diffraction import neural_weights
-from quantem.diffraction.centre_refinement import (
-    CentreRefiner,
+from quantem.diffraction.center_refinement import (
+    CenterRefiner,
     coverage_centroid,
-    load_centre_refiner,
-    refine_centres,
+    load_center_refiner,
+    refine_centers,
 )
 from quantem.diffraction.spot_detection import disk_mean_intensity, drop_masked_peaks
 
@@ -63,7 +63,7 @@ INTENSITY_RADIUS = 5.0
 NEURAL_PEAK_FIELDS = ("q_row", "q_col", "intensity", "confidence", "sigma")
 
 _MODELS: dict[tuple[str, str], SpotUNet] = {}
-_REFINERS: dict[tuple[str, str], CentreRefiner] = {}
+_REFINERS: dict[tuple[str, str], CenterRefiner] = {}
 
 
 def load_spot_unet(
@@ -77,7 +77,7 @@ def load_spot_unet(
     Parameters
     ----------
     model : str or Path, optional
-        A detector name from :data:`~quantem.diffraction.neural_weights.DETECTOR_FILES`
+        A detector name from :data:`~quantem.diffraction.neural_weights.DETECTOR_ENTRIES`
         or a local checkpoint. ``None`` is the default detector.
     version : str, optional
         Dated em-database version to pin.
@@ -87,7 +87,7 @@ def load_spot_unet(
     Returns
     -------
     SpotUNet
-        The model in evaluation mode, with ``mad_floor`` (floor on the normalisation
+        The model in evaluation mode, with ``mad_floor`` (floor on the normalization
         scale, or ``None``) and ``default_threshold`` read from the checkpoint. Loaded
         models are cached per path and device.
     """
@@ -111,10 +111,10 @@ def load_spot_unet(
     return _MODELS[key]
 
 
-def load_centre_step(
+def load_center_step(
     step: bool | str | Path | None, entry_name: str, device: str | torch.device = "cpu"
-) -> CentreRefiner | None:
-    """The network for one centre step, or ``None`` when the step is off.
+) -> CenterRefiner | None:
+    """The network for one center step, or ``None`` when the step is off.
 
     Parameters
     ----------
@@ -128,9 +128,9 @@ def load_centre_step(
 
     Returns
     -------
-    CentreRefiner or None
+    CenterRefiner or None
         The step's refiner. A download that fails warns and returns ``None``, so
-        detection still completes with the centres it has.
+        detection still completes with the centers it has.
     """
     if step is False or step is None:
         return None
@@ -138,14 +138,14 @@ def load_centre_step(
         path = neural_weights.entry_path(entry_name) if step is True else Path(step)
     except (ImportError, RuntimeError) as error:
         warnings.warn(
-            f"centre network {entry_name} unavailable ({error}); keeping the centres it "
+            f"center network {entry_name} unavailable ({error}); keeping the centers it "
             "would have refined.",
             stacklevel=3,
         )
         return None
     key = (str(path), str(device))
     if key not in _REFINERS:
-        _REFINERS[key] = load_centre_refiner(path, device)
+        _REFINERS[key] = load_center_refiner(path, device)
     return _REFINERS[key]
 
 
@@ -176,13 +176,13 @@ def estimate_disk_diameter(pattern: np.ndarray, highpass_sigma: float = 20.0) ->
     spectrum = np.fft.fft2(f)
     autocorrelation = np.fft.fftshift(np.real(np.fft.ifft2(spectrum * np.conj(spectrum))))
     height, width = autocorrelation.shape
-    centre_row, centre_col = height // 2, width // 2
-    peak = autocorrelation[centre_row, centre_col]
+    center_row, center_col = height // 2, width // 2
+    peak = autocorrelation[center_row, center_col]
     if peak <= 0:
         return CANONICAL_DIAMETER
 
-    def half_maximum_width(profile: np.ndarray, centre: int) -> int:
-        left = right = centre
+    def half_maximum_width(profile: np.ndarray, center: int) -> int:
+        left = right = center
         while left > 0 and profile[left] > 0.5:
             left -= 1
         while right < profile.size - 1 and profile[right] > 0.5:
@@ -194,8 +194,8 @@ def estimate_disk_diameter(pattern: np.ndarray, highpass_sigma: float = 20.0) ->
     return float(
         0.5
         * (
-            half_maximum_width(autocorrelation[centre_row] / peak, centre_col)
-            + half_maximum_width(autocorrelation[:, centre_col] / peak, centre_row)
+            half_maximum_width(autocorrelation[center_row] / peak, center_col)
+            + half_maximum_width(autocorrelation[:, center_col] / peak, center_row)
         )
     )
 
@@ -284,7 +284,7 @@ def _network_input(
     levels: int,
     mad_floor: float | None = None,
 ) -> torch.Tensor:
-    """Resample, normalise and reflect-pad a ``(B, H, W)`` stack to ``(B, 1, H', W')``.
+    """Resample, normalize and reflect-pad a ``(B, H, W)`` stack to ``(B, 1, H', W')``.
 
     ``mad_floor`` bounds the robust scale from below: on sparse counted patterns the
     MAD is about zero and single counts would otherwise become huge values. A model
@@ -353,7 +353,7 @@ def _decode(
 
     With a mask head each position moves to its mask centroid, unless the mask there is
     under 15 % of the expected disk area or its centroid lands more than 1.5 px away (a
-    neighbour's mask, or none).
+    neighbor's mask, or none).
 
     Returns ``(T, 4)`` ``[row, col, confidence, width]`` in working pixels, where width
     is the spread (one standard deviation) of the softmax of the heatmap logits within
@@ -396,14 +396,14 @@ def _decode(
     peak_rows = rows.float() + offset[batch_index, 0, rows, cols]
     peak_cols = cols.float() + offset[batch_index, 1, rows, cols]
     if len(outputs) > 2:
-        centre_rows, centre_cols, area = _mask_centroid(
+        center_rows, center_cols, area = _mask_centroid(
             outputs[2], batch_index, peak_rows, peak_cols, mask_radius
         )
-        trusted = (torch.hypot(centre_rows - peak_rows, centre_cols - peak_cols) < 1.5) & (
+        trusted = (torch.hypot(center_rows - peak_rows, center_cols - peak_cols) < 1.5) & (
             area > 0.15 * np.pi * mask_radius**2
         )
-        peak_rows = torch.where(trusted, centre_rows, peak_rows)
-        peak_cols = torch.where(trusted, centre_cols, peak_cols)
+        peak_rows = torch.where(trusted, center_rows, peak_rows)
+        peak_cols = torch.where(trusted, center_cols, peak_cols)
     return torch.stack([peak_rows, peak_cols, confidence, spread], 1), batch_index
 
 
@@ -412,7 +412,7 @@ def _to_pattern_coordinates(
 ) -> torch.Tensor:
     """Map ``[row, col, confidence, width]`` from the resampled working image back.
 
-    The resample aligns the first and last pixel centres, so working pixel ``i`` sits
+    The resample aligns the first and last pixel centers, so working pixel ``i`` sits
     at ``i * (n - 1) / (out - 1)`` with ``out = round(n * factor)``, not at
     ``i / factor``; the difference is a uniform scale error of up to ~0.6 %.
     """
@@ -427,9 +427,9 @@ def _to_pattern_coordinates(
 
 
 def positional_sigma(width_px, signal, background_per_px, pixel: float = 1.0) -> np.ndarray:
-    """One standard deviation of a centre, in pixels, from counting statistics.
+    """One standard deviation of a center, in pixels, from counting statistics.
 
-    The localisation-precision formula for a spot of standard deviation ``s`` measured
+    The localization-precision formula for a spot of standard deviation ``s`` measured
     with ``N`` signal counts over a background of ``b²`` counts per pixel, pixel size
     ``a`` (Thompson, Larson and Webb, Biophys. J. 82, 2775 (2002))::
 
@@ -490,7 +490,7 @@ def disk_counts(
 
 
 def counts_radius(pattern: np.ndarray, spot_radius: float | None) -> float:
-    """Disk radius (px) for the counts and the centre steps: ``spot_radius`` when given,
+    """Disk radius (px) for the counts and the center steps: ``spot_radius`` when given,
     else half the autocorrelation diameter estimate."""
     if spot_radius:
         return float(spot_radius)
@@ -511,8 +511,8 @@ def detect_disks_neural_batch(
     background_sigma: float | None = None,
     max_num_peaks: int = 1000,
     mask: np.ndarray | None = None,
-    centre_refiner: CentreRefiner | None = None,
-    friedel_refiner: CentreRefiner | None = None,
+    center_refiner: CenterRefiner | None = None,
+    friedel_refiner: CenterRefiner | None = None,
     forward_batch_size: int = 64,
 ) -> list[np.ndarray]:
     """Detect spots across a stack of patterns with a trained SpotUNet.
@@ -537,9 +537,9 @@ def detect_disks_neural_batch(
         Maximum number of peaks kept per pattern.
     mask : np.ndarray, optional
         ``(H, W)`` boolean beam-stop mask; peaks inside it are dropped.
-    centre_refiner : CentreRefiner, optional
+    center_refiner : CenterRefiner, optional
         The refine step (F5), run on every detection.
-    friedel_refiner : CentreRefiner, optional
+    friedel_refiner : CenterRefiner, optional
         The Friedel-partner step (P4), run after the refine step.
     forward_batch_size : int, default=64
         Patterns per forward pass; bounds the activation memory, not the result.
@@ -580,10 +580,10 @@ def detect_disks_neural_batch(
     radius = counts_radius(first, 0.5 * spot_diameter if spot_diameter else None)
     positions = [p[:, :2] for p in per_pattern]
     step_sigmas = None
-    for refiner in (centre_refiner, friedel_refiner):
+    for refiner in (center_refiner, friedel_refiner):
         if refiner is None:
             continue
-        positions, sigmas = refine_centres(patterns, positions, radius, refiner)
+        positions, sigmas = refine_centers(patterns, positions, radius, refiner)
         if sigmas is not None:
             # A disk this step kept keeps the earlier step's uncertainty.
             step_sigmas = (
@@ -669,7 +669,7 @@ def calibrate_neural(
     """Pick the background width (and, for faint data, the threshold) on a few patterns.
 
     The network's own peak confidence has a clean maximum against the background
-    width, so the width that maximises it is chosen per pattern and the median taken.
+    width, so the width that maximizes it is chosen per pattern and the median taken.
     When even the best confidence is weak (faint spots, amorphous or in-SEM data) the
     threshold is lowered below the model's default so real faint peaks survive.
 

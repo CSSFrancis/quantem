@@ -38,10 +38,10 @@ from quantem.diffraction.neural_disk_detection import (
 from quantem.diffraction.neural_disk_detection import (
     NEURAL_PEAK_FIELDS,
     detect_disks_neural_batch,
-    load_centre_step,
+    load_center_step,
     load_spot_unet,
 )
-from quantem.diffraction.neural_weights import CENTRE_REFINER_ENTRY, FRIEDEL_PARTNER_ENTRY
+from quantem.diffraction.neural_weights import CENTER_REFINER_ENTRY, FRIEDEL_PARTNER_ENTRY
 from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog_batch
 from quantem.diffraction.strain import StrainMap
 
@@ -453,7 +453,7 @@ class BraggVectors(AutoSerialize):
         mask: np.ndarray | Literal["auto"] | None = None,
         model: str | Path | None = None,
         model_version: str | None = None,
-        refine_centres: bool | str | Path = True,
+        refine_centers: bool | str | Path = True,
         friedel_partner: bool | str | Path = True,
         neighbor_refine: bool = False,
         batch_size: int | None = None,
@@ -487,7 +487,7 @@ class BraggVectors(AutoSerialize):
             ``"neural"`` the reported intensity is the mean of the raw pattern over
             a disk around each peak. ``"neural"`` adds two fields per peak:
             ``confidence`` (the network's heatmap peak, 0 to 1) and ``sigma`` (the
-            one-standard-deviation uncertainty of the centre, in pixels).
+            one-standard-deviation uncertainty of the center, in pixels).
         min_abs_intensity : float, default=0.0
             Drop correlation peaks below this absolute intensity
             (``method="correlation"`` only).
@@ -540,23 +540,23 @@ class BraggVectors(AutoSerialize):
             stop in the mean diffraction pattern.
         model : str or Path, optional
             Detector for ``"neural"``: a name from
-            :data:`~quantem.diffraction.neural_weights.DETECTOR_FILES` or a local
+            :data:`~quantem.diffraction.neural_weights.DETECTOR_ENTRIES` or a local
             checkpoint. ``None`` uses the default detector.
         model_version : str, optional
             Dated em-database version of the detector weights to pin.
-        refine_centres : bool or str or Path, default=True
+        refine_centers : bool or str or Path, default=True
             For ``"neural"``, re-place every disk on the raw pattern at native
-            resolution with the centre network F5 (see
-            :mod:`~quantem.diffraction.centre_refinement`). A path uses a local
+            resolution with the center network F5 (see
+            :mod:`~quantem.diffraction.center_refinement`). A path uses a local
             checkpoint. Skipped for spots under 5 px radius, where it cannot beat
             the detector.
         friedel_partner : bool or str or Path, default=True
-            For ``"neural"``, after ``refine_centres``, refine each disk again
+            For ``"neural"``, after ``refine_centers``, refine each disk again
             together with its Friedel mirror (the network P4), which sees both
             dynamical fills of ``g`` and ``-g``. Works on spots of 6-16 px radius
             and leaves others alone. A path uses a local checkpoint.
         neighbor_refine : bool, default=False
-            After detection, drop candidates the neighbouring scan positions do not
+            After detection, drop candidates the neighboring scan positions do not
             support (overlap merge, persistence and a soft Friedel prior; see
             :mod:`~quantem.diffraction.neighbor_refinement`). Pairs well with a low
             threshold. Full-scan runs only; ignored with ``positions``.
@@ -625,10 +625,10 @@ class BraggVectors(AutoSerialize):
                 max_num_peaks=max_num_peaks,
             )
             network = load_spot_unet(model, version=model_version, device=self.device)
-            centre_refiner = load_centre_step(refine_centres, CENTRE_REFINER_ENTRY, self.device)
+            center_refiner = load_center_step(refine_centers, CENTER_REFINER_ENTRY, self.device)
             friedel_refiner = (
-                load_centre_step(friedel_partner, FRIEDEL_PARTNER_ENTRY, self.device)
-                if centre_refiner is not None
+                load_center_step(friedel_partner, FRIEDEL_PARTNER_ENTRY, self.device)
+                if center_refiner is not None
                 else None
             )
             beamstop = self._resolve_mask(mask)
@@ -640,7 +640,7 @@ class BraggVectors(AutoSerialize):
                     dps,
                     network,
                     mask=beamstop,
-                    centre_refiner=centre_refiner,
+                    center_refiner=center_refiner,
                     friedel_refiner=friedel_refiner,
                     **neural_kwargs,
                 )
@@ -648,7 +648,7 @@ class BraggVectors(AutoSerialize):
             # recorded in metadata only
             detect_kwargs.update(
                 model=str(model) if model is not None else None,
-                refine_centres=centre_refiner is not None,
+                refine_centers=center_refiner is not None,
                 friedel_partner=friedel_refiner is not None,
             )
 
