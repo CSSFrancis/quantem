@@ -7,3 +7,5 @@ from quantem.core.ml.inr import HSiren as HSiren
 from quantem.core.ml.dense_nn import DenseNN as DenseNN
 from quantem.core.ml.cnn_dense import CNNDense as CNNDense
 from quantem.core.ml.conv_autoencoder import ConvAutoencoder2d as ConvAutoencoder2d
+from quantem.core.ml.spot_net import SpotNet as SpotNet
+from quantem.core.ml.center_net import CenterNet as CenterNet

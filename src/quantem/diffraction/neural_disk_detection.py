@@ -67,7 +67,7 @@ _REFINERS: dict[tuple[str, str], CenterRefiner] = {}
 
 
 def load_spot_net(
-    model: str | Path | None = None,
+    model: str | Path | SpotNet | None = None,
     *,
     version: str | None = None,
     device: str | torch.device = "cpu",
@@ -76,9 +76,10 @@ def load_spot_net(
 
     Parameters
     ----------
-    model : str or Path, optional
-        A detector name from :data:`~quantem.diffraction.neural_weights.DETECTOR_ENTRIES`
-        or a local checkpoint. ``None`` is the default detector.
+    model : str, Path or SpotNet, optional
+        A detector name from :data:`~quantem.diffraction.neural_weights.DETECTOR_ENTRIES`,
+        a local checkpoint, or a model already in memory (a taught one, say), which is
+        moved to ``device`` and returned. ``None`` is the default detector.
     version : str, optional
         Dated em-database version to pin.
     device : str or torch.device, default="cpu"
@@ -91,6 +92,8 @@ def load_spot_net(
         scale, or ``None``) and ``default_threshold`` read from the checkpoint. Loaded
         models are cached per path and device.
     """
+    if isinstance(model, torch.nn.Module):
+        return model.to(device).eval()
     path = neural_weights.detector_path(model, version)
     key = (str(path), str(device))
     if key not in _MODELS:
@@ -109,6 +112,37 @@ def load_spot_net(
         network.default_threshold = float(architecture.get("threshold", 0.3) or 0.3)
         _MODELS[key] = network.to(device).eval()
     return _MODELS[key]
+
+
+def save_spot_net(model: SpotNet, path: str | Path) -> Path:
+    """Write a DE SpotNet (a taught one, say) as a checkpoint ``model=`` can load.
+
+    Parameters
+    ----------
+    model : SpotNet
+        The model.
+    path : str or Path
+        The ``.pt`` file to write.
+
+    Returns
+    -------
+    Path
+        ``path``.
+    """
+    path = Path(path)
+    torch.save(
+        {
+            "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+            "base": int(model.enc[0][0].out_channels),
+            "levels": int(model.levels),
+            "in_ch": int(model.enc[0][0].in_channels),
+            "mask_head": model.head_mask is not None,
+            "mad_floor": float(getattr(model, "mad_floor", None) or 0.0),
+            "threshold": float(getattr(model, "default_threshold", DEFAULT_THRESHOLD)),
+        },
+        path,
+    )
+    return path
 
 
 def load_center_step(

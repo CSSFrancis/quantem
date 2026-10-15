@@ -5,18 +5,22 @@ em-database and carry their own license (non-commercial), which is printed the f
 time any of them is fetched. Every name that ties quantem to a published file lives
 in this module, so a renamed entry or a new detector is a one-line change here.
 
-Each em-database entry serves one checkpoint, so every detector has an entry of
-its own.
+Each network has a ``_Torch`` entry holding the PyTorch checkpoint quantem loads (the
+entries without the suffix hold ONNX exports for other runtimes), pinned to
+:data:`WEIGHTS_VERSION` so a newer upload cannot change detection under a caller.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+#: The dated em-database version every entry is pinned to.
+WEIGHTS_VERSION = "261015"
+
 #: em-database entries of the center networks: DE CenterNet, the refine step, and
 #: DE FriedelNet, the Friedel-partner step.
-CENTER_REFINER_ENTRY = "DE_CenterNet"
-FRIEDEL_PARTNER_ENTRY = "DE_FriedelNet"
+CENTER_REFINER_ENTRY = "DE_CenterNet_Torch"
+FRIEDEL_PARTNER_ENTRY = "DE_FriedelNet_Torch"
 
 #: The em-database entry of each DE SpotNet detector, by ``model=`` name. ``spotnet``
 #: is trained across disk sizes, so it tolerates residual error in the disk-size
@@ -26,12 +30,16 @@ FRIEDEL_PARTNER_ENTRY = "DE_FriedelNet"
 #: size and weaker off it; ``base16`` is the earlier edge-trained detector, kept as a
 #: fallback.
 DETECTOR_ENTRIES = {
-    "spotnet": "DE_SpotNet",
-    "dynamical": "DE_SpotNet_Dynamical",
-    "production": "DE_SpotNet_Production",
-    "base16": "DE_SpotNet_Base16",
+    "spotnet": "DE_SpotNet_Torch",
+    "dynamical": "DE_SpotNet_Dynamical_Torch",
+    "production": "DE_SpotNet_Production_Torch",
+    "base16": "DE_SpotNet_Base16_Torch",
 }
 DEFAULT_DETECTOR = "spotnet"
+
+#: The replay buffer teaching mixes in (see :mod:`~quantem.diffraction.neural_adapt`).
+#: Not published yet: until it is, teaching takes a local path or runs without it.
+REPLAY_ENTRY = "DE_SpotNet_Replay"
 
 _LICENSE_SHOWN = False
 
@@ -45,7 +53,7 @@ def detector_path(model: str | Path | None, version: str | None = None) -> Path:
         A name in :data:`DETECTOR_ENTRIES`, or a path to a local checkpoint. ``None``
         is :data:`DEFAULT_DETECTOR`.
     version : str, optional
-        Dated em-database version to pin.
+        em-database version to fetch instead of :data:`WEIGHTS_VERSION`.
 
     Returns
     -------
@@ -72,14 +80,13 @@ def entry_path(entry_name: str, version: str | None = None) -> Path:
     entry_name : str
         The em-database entry, e.g. :data:`CENTER_REFINER_ENTRY`.
     version : str, optional
-        Dated version to pin; ``None`` fetches the latest.
+        Dated version to fetch; ``None`` is :data:`WEIGHTS_VERSION`.
 
     Returns
     -------
     Path
-        The downloaded file.
+        The downloaded file, checked against the entry's checksum.
     """
-    global _LICENSE_SHOWN
     try:
         from emdatabase import data
     except ImportError as error:
@@ -90,17 +97,24 @@ def entry_path(entry_name: str, version: str | None = None) -> Path:
     entry_class = getattr(data, entry_name, None)
     if entry_class is None:
         raise RuntimeError(
-            f"This em-database release has no {entry_name!r} entry yet; upgrade "
-            "em-database, or pass a checkpoint path (model=, refine_centers=, "
-            "friedel_partner=) to use local files."
+            f"This em-database release has no {entry_name!r} entry; upgrade em-database, "
+            "or pass a checkpoint path (model=, refine_centers=, friedel_partner=) to use "
+            "local files."
         )
     entry = entry_class()
-    if not _LICENSE_SHOWN:
-        print(
-            f"Direct Electron network weights from em-database are licensed {entry.metadata.license}: "
-            "free for research and other non-commercial use, including in-house use at "
-            "a company; they may not be redistributed in, or used to provide, a product "
-            "or service that is sold. See the em-database entry for the full terms."
-        )
-        _LICENSE_SHOWN = True
-    return Path(entry.download(version=version, background=False, progressbar=False))
+    _show_license(entry.metadata.license)
+    return Path(
+        entry.download(version=version or WEIGHTS_VERSION, background=False, progressbar=False)
+    )
+
+
+def _show_license(license_id: str | None) -> None:
+    global _LICENSE_SHOWN
+    if _LICENSE_SHOWN:
+        return
+    print(
+        f"Direct Electron network weights are licensed {license_id}: free for research "
+        "and other non-commercial use, including in-house use at a company; they may not "
+        "be redistributed in, or used to provide, a product or service that is sold."
+    )
+    _LICENSE_SHOWN = True
