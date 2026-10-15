@@ -14,6 +14,7 @@ from quantem.diffraction.neural_disk_detection import (
     _decode,
     detect_disks_neural_batch,
     load_spot_unet,
+    neural_heatmap,
 )
 from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog_batch
 
@@ -165,9 +166,16 @@ def test_trained_weights_localise_planted_disks():
     model = load_spot_unet(os.environ["SPOT_UNET_WEIGHTS"])
     # Flat-topped disks of radius 4, the regime the network was trained on.
     rng = np.random.default_rng(1)
-    dp = sum(
-        200.0 / (1 + np.exp((np.hypot(_YY - r, _XX - c) - 4.0) / 0.5)) for r, c in SPOTS
-    )
+    dp = sum(200.0 / (1 + np.exp((np.hypot(_YY - r, _XX - c) - 4.0) / 0.5)) for r, c in SPOTS)
     dp = rng.poisson(dp + 5.0).astype(np.float32)
     cell = detect_disks_neural_batch(torch.as_tensor(dp[None]), model)[0]
     assert _recovered(cell, tolerance=1.0) == len(SPOTS)
+
+
+def test_neural_heatmap_is_on_the_detector_grid(tmp_path):
+    path = tmp_path / "spot_unet.pt"
+    _random_checkpoint(path)
+    dps = torch.as_tensor(np.asarray(_dataset().array[0, :2]))
+    heatmap = neural_heatmap(dps, load_spot_unet(path))
+    assert heatmap.shape == (2, H, W)
+    assert float(heatmap.min()) >= 0 and float(heatmap.max()) <= 1

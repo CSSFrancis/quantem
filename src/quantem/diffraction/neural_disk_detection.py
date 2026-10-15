@@ -342,6 +342,49 @@ def detect_disks_neural_batch(
 
 
 @torch.no_grad()
+def neural_heatmap(
+    dps: torch.Tensor,
+    model: SpotUNet,
+    *,
+    spot_diameter: float | None = None,
+    background_sigma: float | None = None,
+) -> torch.Tensor:
+    """The network's spot confidence for each pattern, on the detector pixel grid.
+
+    For display: this is the map :func:`detect_disks_neural_batch` thresholds,
+    resampled back from the network's working scale.
+
+    Parameters
+    ----------
+    dps : torch.Tensor
+        ``(B, H, W)`` diffraction patterns.
+    model : SpotUNet
+        Trained model.
+    spot_diameter : float, optional
+        Disk diameter in pixels, overriding the autocorrelation estimate.
+    background_sigma : float, optional
+        Width in pixels of the background removed before the network.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(B, H, W)`` confidences in ``[0, 1]``.
+    """
+    first = dps[0].detach().cpu().numpy()
+    diameter = spot_diameter or estimate_disk_diameter(first)
+    factor = canonical_scale_factor(diameter)
+    _, background_sigma = _resolve_window_and_background(
+        0, background_sigma, _working_diameter(first, factor, spot_diameter)
+    )
+    device = next(model.parameters()).device
+    heatmap, _ = model(_network_input(dps.to(device), factor, background_sigma, model.levels))
+    height, width = dps.shape[-2:]
+    working = (int(round(height * factor)), int(round(width * factor)))
+    heatmap = torch.sigmoid(heatmap[:, :, : working[0], : working[1]])
+    return F.interpolate(heatmap, size=(height, width), mode="bilinear", align_corners=True)[:, 0]
+
+
+@torch.no_grad()
 def calibrate_neural(
     dps: torch.Tensor,
     model: SpotUNet,
