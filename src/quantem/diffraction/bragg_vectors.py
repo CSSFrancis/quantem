@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy as _copy
 import warnings
 from pathlib import Path
-from typing import Any, Literal, Sequence, Union
+from typing import Any, Callable, Literal, Sequence, Union
 
 import numpy as np
 import torch
@@ -31,6 +31,14 @@ from quantem.diffraction.disk_detection import (
     synthetic_probe,
     template_fourier,
 )
+from quantem.diffraction.neural_disk_detection import (
+    DEFAULT_THRESHOLD as DEFAULT_NEURAL_THRESHOLD,
+)
+from quantem.diffraction.neural_disk_detection import (
+    detect_disks_neural_batch,
+    load_spot_unet,
+)
+from quantem.diffraction.spot_detection import detect_beamstop, detect_disks_dog_batch
 from quantem.diffraction.strain import StrainMap
 
 PEAK_FIELDS = ("q_row", "q_col", "intensity")
@@ -424,8 +432,9 @@ class BraggVectors(AutoSerialize):
         self,
         *,
         positions: list[tuple[int, int]] | None = None,
+        method: Literal["correlation", "dog", "neural"] = "correlation",
         min_abs_intensity: float = 0.0,
-        min_spacing: float = 0.0,
+        min_spacing: float | None = None,
         edge_boundary: int = 1,
         subpixel: str = "upsample",
         upsample_factor: int = 16,
@@ -433,6 +442,13 @@ class BraggVectors(AutoSerialize):
         background_sigma: float | str | None = None,
         corr_power: float = 1.0,
         sigma_cc: float | None = None,
+        threshold: float | None = None,
+        sigma1: float = 0.8,
+        sigma2: float = 2.0,
+        spot_diameter: float | None = None,
+        mask: np.ndarray | Literal["auto"] | None = None,
+        model_path: str | Path | None = None,
+        model_version: str | None = None,
         batch_size: int | None = None,
         progressbar: bool = True,
         save_to_gpu: bool = True,
@@ -453,11 +469,23 @@ class BraggVectors(AutoSerialize):
         positions : list of tuple of int, optional
             ``(row, col)`` scan positions to test on. ``None`` (default) processes
             the full scan and updates the workflow state.
+        method : {"correlation", "dog", "neural"}, default="correlation"
+            ``"correlation"`` matches the template from a ``make_template_*``
+            method. ``"dog"`` needs no template: a Difference-of-Gaussians
+            band-pass thresholded on its signal-to-noise ratio, suited to small
+            spots (see :mod:`~quantem.diffraction.spot_detection`). ``"neural"``
+            needs no template either: a trained U-Net that estimates the disk size
+            itself (see :mod:`~quantem.diffraction.neural_disk_detection`); its
+            weights are downloaded from em-database on first use. For ``"dog"`` and
+            ``"neural"`` the reported intensity is the mean of the raw pattern over
+            a disk around each peak.
         min_abs_intensity : float, default=0.0
-            Drop correlation peaks below this absolute intensity.
-        min_spacing : float, default=0.0
+            Drop correlation peaks below this absolute intensity
+            (``method="correlation"`` only).
+        min_spacing : float, optional
             Minimum spacing in pixels between kept peaks; closer / dimmer peaks are
-            suppressed.
+            suppressed. ``None`` uses the method's default: 0 for correlation, 5
+            for dog, 4 for neural.
         edge_boundary : int, default=1
             Width in pixels of the border in which peaks are ignored.
         subpixel : {"none", "parabolic", "upsample"}, default="upsample"
@@ -487,6 +515,25 @@ class BraggVectors(AutoSerialize):
         sigma_cc : float | None
             Gaussian smoothing of the correlation map (pixels) before peak
             finding; merges the speckle of a noisy disk into one maximum.
+        threshold : float, optional
+            Detection threshold for ``"dog"`` (band-pass signal-to-noise ratio,
+            default 10) and ``"neural"`` (heatmap confidence, default 0.3).
+        sigma1, sigma2 : float, default=0.8, 2.0
+            Inner and outer Gaussian widths in pixels for ``"dog"``.
+        spot_diameter : float, optional
+            Disk diameter in pixels for ``"neural"``, overriding its
+            autocorrelation estimate. For ``"neural"`` a ``background_sigma``
+            float sets the width of the background removed before the network
+            (see :func:`~quantem.diffraction.neural_disk_detection.calibrate_neural`).
+        mask : np.ndarray or "auto", optional
+            Beam-stop mask for ``"dog"`` and ``"neural"``: peaks inside it are
+            dropped and it is left out of the noise estimate. ``"auto"`` finds the
+            stop in the mean diffraction pattern.
+        model_path : str or Path, optional
+            Local SpotUNet checkpoint for ``"neural"``, instead of the em-database
+            download.
+        model_version : str, optional
+            Dated em-database version of the weights to pin for ``"neural"``.
         batch_size : int, optional
             Number of patterns per batch. ``None`` (default) picks a size from the
             detector dimensions.
@@ -505,20 +552,58 @@ class BraggVectors(AutoSerialize):
             Detected peaks (``[q_row, q_col, intensity]``): shape ``(scan_row,
             scan_col)`` for the full scan, or ``(len(positions),)`` for a test run.
         """
-        if self._template_ft is None:
-            raise ValueError("Run a make_template_* method before detect_disks().")
+        if method == "correlation":
+            if self._template_ft is None:
+                raise ValueError("Run a make_template_* method before detect_disks().")
+            detect_kwargs = dict(
+                min_abs_intensity=min_abs_intensity,
+                min_spacing=0.0 if min_spacing is None else min_spacing,
+                edge_boundary=edge_boundary,
+                subpixel=subpixel,
+                upsample_factor=upsample_factor,
+                max_num_peaks=max_num_peaks,
+                background_sigma=self._resolve_background_sigma(background_sigma),
+                corr_power=corr_power,
+                sigma_cc=sigma_cc,
+            )
+            template_ft = self._template_ft
 
-        detect_kwargs = dict(
-            min_abs_intensity=min_abs_intensity,
-            min_spacing=min_spacing,
-            edge_boundary=edge_boundary,
-            subpixel=subpixel,
-            upsample_factor=upsample_factor,
-            max_num_peaks=max_num_peaks,
-            background_sigma=self._resolve_background_sigma(background_sigma),
-            corr_power=corr_power,
-            sigma_cc=sigma_cc,
-        )
+            def detector(dps: torch.Tensor) -> list[NDArray]:
+                return detect_disks_batch(dps, template_ft, **detect_kwargs)
+
+        elif method == "dog":
+            detect_kwargs = dict(
+                sigma1=sigma1,
+                sigma2=sigma2,
+                threshold=10.0 if threshold is None else threshold,
+                min_spacing=5.0 if min_spacing is None else min_spacing,
+                edge_boundary=edge_boundary,
+                subpixel=subpixel != "none",
+                max_num_peaks=max_num_peaks,
+            )
+            beamstop = self._resolve_mask(mask)
+
+            def detector(dps: torch.Tensor) -> list[NDArray]:
+                return detect_disks_dog_batch(dps, mask=beamstop, **detect_kwargs)
+
+        elif method == "neural":
+            if isinstance(background_sigma, str):
+                raise ValueError("For method='neural', background_sigma must be a float or None.")
+            detect_kwargs = dict(
+                threshold=DEFAULT_NEURAL_THRESHOLD if threshold is None else threshold,
+                min_spacing=4 if min_spacing is None else int(round(min_spacing)),
+                spot_diameter=spot_diameter,
+                background_sigma=background_sigma,
+                max_num_peaks=max_num_peaks,
+            )
+            model = load_spot_unet(model_path, version=model_version, device=self.device)
+            beamstop = self._resolve_mask(mask)
+
+            def detector(dps: torch.Tensor) -> list[NDArray]:
+                return detect_disks_neural_batch(dps, model, mask=beamstop, **detect_kwargs)
+
+        else:
+            raise ValueError(f"method must be 'correlation', 'dog' or 'neural', got {method!r}")
 
         if save_to_gpu and str(self.device) != "cpu":
             if getattr(self, "_gpu_cache", None) is None:
@@ -537,14 +622,12 @@ class BraggVectors(AutoSerialize):
             if len(positions) == 0:
                 raise ValueError("positions must contain at least one (row, col) to test on.")
             coords = [(int(r), int(c)) for r, c in positions]
-            results = self._detect_positions(coords, detect_kwargs, batch_size, progressbar=False)
+            results = self._detect_positions(coords, detector, batch_size, progressbar=False)
             return Vector.from_data(results, fields=PEAK_FIELDS, name="bragg_peaks_test")
 
         scan_r, scan_c = int(self.dataset.shape[0]), int(self.dataset.shape[1])
         coords = list(np.ndindex(scan_r, scan_c))
-        results = self._detect_positions(
-            coords, detect_kwargs, batch_size, progressbar=progressbar
-        )
+        results = self._detect_positions(coords, detector, batch_size, progressbar=progressbar)
         # Store every cell in one pass. Per-cell assignment (peaks[r, c] = arr)
         # appends to the backing buffer on every write, while from_data joins all
         # cells with a single concatenation.
@@ -553,7 +636,7 @@ class BraggVectors(AutoSerialize):
         peaks.metadata.update(self._scan_calibration())
 
         self.peaks = peaks
-        self.metadata["detect"] = detect_kwargs
+        self.metadata["detect"] = {"method": method, **detect_kwargs}
         self.compute_bvm()
         return peaks
 
@@ -1954,6 +2037,34 @@ class BraggVectors(AutoSerialize):
             return 2.0 * float(radius)
         return float(background_sigma)
 
+    def _resolve_mask(self, mask: np.ndarray | str | None) -> np.ndarray | None:
+        """Resolve the ``mask`` argument of :meth:`detect_disks` to a boolean array.
+
+        Parameters
+        ----------
+        mask : np.ndarray, "auto" or None
+            An explicit ``(H, W)`` mask, ``"auto"`` to find a beam stop in the mean
+            diffraction pattern, or ``None`` for no mask.
+
+        Returns
+        -------
+        np.ndarray or None
+            ``(H, W)`` boolean mask, or ``None``.
+        """
+        if mask is None:
+            return None
+        if isinstance(mask, str):
+            if mask != "auto":
+                raise ValueError("mask must be an array, None, or 'auto'.")
+            return detect_beamstop(np.asarray(self.dataset.dp_mean.array))
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != tuple(self.dataset.shape[-2:]):
+            raise ValueError(
+                f"mask shape {mask.shape} does not match diffraction pattern shape "
+                f"{tuple(self.dataset.shape[-2:])}."
+            )
+        return mask
+
     def _set_template(
         self,
         probe: torch.Tensor,
@@ -1998,7 +2109,7 @@ class BraggVectors(AutoSerialize):
     def _detect_positions(
         self,
         coords: list[tuple[int, int]],
-        detect_kwargs: dict[str, Any],
+        detector: Callable[[torch.Tensor], list[NDArray]],
         batch_size: int | None,
         *,
         progressbar: bool,
@@ -2006,15 +2117,15 @@ class BraggVectors(AutoSerialize):
         """Batched detection over a list of ``(row, col)`` scan positions.
 
         Patterns are stacked into chunks of ``batch_size`` and passed to
-        :func:`~quantem.diffraction.disk_detection.detect_disks_batch`.
+        ``detector``.
 
         Parameters
         ----------
         coords : list of tuple of int
             ``(row, col)`` scan positions to detect on.
-        detect_kwargs : dict
-            Keyword arguments forwarded to
-            :func:`~quantem.diffraction.disk_detection.detect_disks_batch`.
+        detector : callable
+            Maps a ``(B, H, W)`` stack of patterns to a length-``B`` list of
+            ``(M, 3)`` peak arrays.
         batch_size : int or None
             Number of patterns per batch. ``None`` picks a size from the detector
             dimensions.
@@ -2056,7 +2167,7 @@ class BraggVectors(AutoSerialize):
                 dps_np = np.asarray(self.dataset.array[np.asarray(rows), np.asarray(cols)])
                 dps = torch.as_tensor(dps_np, dtype=torch.float32, device=self.device)
 
-            out = detect_disks_batch(dps, self._template_ft, **detect_kwargs)
+            out = detector(dps)
             results.extend(
                 arr if arr.shape[0] else np.empty((0, len(PEAK_FIELDS)), dtype=float)
                 for arr in out
